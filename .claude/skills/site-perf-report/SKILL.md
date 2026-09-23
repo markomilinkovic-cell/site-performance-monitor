@@ -144,12 +144,12 @@ Measure mobile and desktop. They are scored separately by Google and routinely d
 points on the same page — a site can look fine on desktop while failing on mobile, and
 reporting only one number hides that.
 
-`--runs 3` (the default) measures each page three times and keeps the median, because a single
+`--runs 5` (the default) measures each page five times and keeps the median, because a single
 run is noisy even on Google's hardware (see "Things worth telling the user").
 
 **How the time works.** One PSI call takes 15–80s, but `audit.js` runs calls in parallel
-(`--concurrency 10` by default), so a group measured on both form factors with three runs each
-costs about one or two calls' worth of wall time. Measure both strategies **in the same command**
+(`--concurrency 10` by default), so a group measured on both form factors with five runs each
+costs about one call's worth of wall time per ten calls. Measure both strategies **in the same command**
 (`--strategy both`, the default): the script then settles on one working URL per group and uses it
 for both, so there's no mobile-then-desktop hand-off to manage.
 
@@ -157,15 +157,15 @@ for both, so there's no mobile-then-desktop hand-off to manage.
 shell tool's timeout, which is 2 minutes unless a longer one (up to 10 minutes) is passed.
 `--deadline` (seconds, default 270) makes `audit.js` stop starting new calls before the limit and
 still write its output; groups it didn't get to are listed as skipped with "time budget", and
-groups that got fewer runs than asked log `only N/3 runs succeeded`. Keep `--deadline` about 30s
+groups that got fewer runs than asked log `only N/5 runs succeeded`. Keep `--deadline` about 30s
 under the command limit, and chunk the groups so a chunk comfortably fits:
 
-- claude.ai chat: `--size 3`, `--deadline 270`
-- Claude Code: pass a 600000 ms timeout to the shell tool, then `--size 5`, `--deadline 540`
+- claude.ai chat: `--size 2`, `--deadline 270`
+- Claude Code: pass a 600000 ms timeout to the shell tool, then `--size 4`, `--deadline 540`
 
 ```bash
 # 1. chunks that fit one command each
-node scripts/split.js /tmp/groups-final.json --size 3 --prefix /tmp/g-
+node scripts/split.js /tmp/groups-final.json --size 2 --prefix /tmp/g-
 
 # 2. both form factors per chunk, one command per chunk
 PSI_API_KEY=... node scripts/audit.js /tmp/g-0.json --out /tmp/a-0.json
@@ -177,7 +177,7 @@ node scripts/merge.js /tmp/a-*.json --out /tmp/run.json
 ```
 
 If a group was skipped for time, or came back incomplete (one form factor missing), or logged
-`only 2/3 runs succeeded` or a spread wider than ~10 points, rerun just that group — put it in its
+fewer than 4 of 5 runs succeeded, rerun just that group — put it in its
 own groups file, measure it, and pass the rerun to `merge.js` **after** the original chunk; the
 later file wins, and `merge.js` drops a group from `skipped`/`incomplete` once a rerun covers it.
 If a command is killed by the shell before `--deadline`, its output file is never written — rerun
@@ -268,18 +268,24 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 ## Things worth telling the user
 
 - **Lighthouse is a lab measurement, and it is noisy — on PSI too.** PSI takes the measuring
-  machine out of our hands, but Google's machines still vary: two PSI runs of the same blog post a
-  minute apart scored 75 and 89 while this was being built. Most of the noise still comes through
-  TBT (30% of the score); LCP and CLS are far more stable.
-  That is why `--runs` defaults to 3 and the report stores the median plus the observed spread.
+  machine out of our hands, but Google's machines still vary. Five PSI runs of trafft.com's
+  homepage started at the same moment scored 58–75 on mobile and 68–95 on desktop. On desktop
+  the spread came through TBT (84–630 ms), following the CPU speed of the machine Google assigned
+  (`benchmarkIndex` 598–1166); on mobile through FCP/LCP (FCP 2.9–3.9 s), i.e. how fast the
+  server answered that particular request.
+  So **a single run on pagespeed.web.dev differing from the dashboard by ~10 points is expected**
+  — the web UI is one draw from that range, the dashboard is the median of five.
+  That is why `--runs` defaults to 5 and the report stores the median plus the observed spread.
+  Wide spreads are normal here; don't rerun a group just because its spread is wide.
   Tell the user to read a change against that spread: if the score moved less than the spread,
   nothing happened. The dashboard already labels such changes "u okviru šuma".
   For a suspected regression, compare the raw metrics rather than the score — a real regression
   shows up as a moved LCP or a genuinely larger TBT, not as a 4-point score wobble.
 - **Scores measured before the switch to PSI aren't comparable with PSI scores.** Older runs
-  were local Lighthouse on whatever machine ran the skill. Runs now carry `engine: "psi"`; the
-  dashboard shows a "measuring method changed" note on the first PSI run and draws no deltas
-  across the switch. Treat the first PSI run as the new baseline.
+  were local Lighthouse on whatever machine ran the skill. Runs now carry `source: "psi"` (and
+  `engine: "psi"`); the dashboard labels each run's source, shows other-source runs dashed in the
+  history, and only computes deltas between runs of the same source. Treat the first PSI run as
+  the new baseline.
 - **The dashboard is organization-internal.** A page that stores data can't be shared by public
   link, so colleagues need to be in the same organization and signed in.
 - **Only the dashboard's owner can add runs to it.** If a colleague runs this skill, they'll get

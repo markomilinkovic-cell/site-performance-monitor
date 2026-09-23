@@ -3,7 +3,7 @@
 // emit dashboard JSON.
 //
 // Usage: PSI_API_KEY=... node audit.js groups.json
-//          [--strategy both|mobile|desktop] [--runs 3] [--concurrency 10]
+//          [--strategy both|mobile|desktop] [--runs 5] [--concurrency 10]
 //          [--deadline 270] [--out run.json]
 //
 // PSI runs Lighthouse on Google's own machines, so nothing is installed here
@@ -25,7 +25,7 @@ const VALUE_FLAGS = ["--strategy", "--runs", "--concurrency", "--deadline", "--o
 const input = args.find((a, i) => !a.startsWith("--") && !VALUE_FLAGS.includes(args[i - 1]));
 const getFlag = (n, d) => { const i = args.indexOf("--" + n); return i === -1 ? d : args[i + 1]; };
 const STRATEGY = getFlag("strategy", "both");
-const RUNS = Math.max(1, parseInt(getFlag("runs", "3"), 10));
+const RUNS = Math.max(1, parseInt(getFlag("runs", "5"), 10));
 const CONCURRENCY = Math.max(1, parseInt(getFlag("concurrency", "10"), 10));
 // Stop starting new calls after this many seconds and write what we have.
 // 270 fits the 300s command limit in claude.ai chat; lower it for shorter limits.
@@ -39,7 +39,7 @@ const KEY_FROM_PROXY = /^(1|true|yes)$/i.test(process.env.PSI_KEY_FROM_PROXY || 
 
 if (!input) {
   console.error("usage: PSI_API_KEY=... node audit.js groups.json [--strategy both|mobile|desktop] " +
-    "[--runs 3] [--concurrency 10] [--deadline 270] [--out run.json]");
+    "[--runs 5] [--concurrency 10] [--deadline 270] [--out run.json]");
   process.exit(1);
 }
 if (!KEY && !KEY_FROM_PROXY) {
@@ -384,6 +384,9 @@ async function measureGroup(g) {
   const run = {
     site: src.site,
     origin,
+    // The published dashboards label and compare runs by `source`; `engine` is
+    // kept for anything that reads the older field.
+    source: "psi",
     engine: "psi",
     lighthouseVersion,
     strategies: STRATEGIES,

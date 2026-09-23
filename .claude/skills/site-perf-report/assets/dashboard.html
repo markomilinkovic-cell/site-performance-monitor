@@ -58,6 +58,13 @@ select{font:inherit;font-size:13px;font-weight:600;color:var(--ink);background:v
   font-size:11px;font-weight:600;color:var(--ink-2);white-space:nowrap}
 .spread-scale{display:flex;justify-content:space-between;margin-top:28px;font-size:11.5px;color:var(--ink-3);font-weight:500}
 main .wrap{padding-top:32px;padding-bottom:48px}
+.cwv{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:3px;margin-left:8px;vertical-align:middle}
+.cwv.pass{background:var(--good-zone);color:var(--good);border:1px solid var(--good)}
+.cwv.fail{background:var(--bad-zone);color:var(--bad);border:1px solid var(--bad)}
+.pfield{border-top:1px solid var(--rule);padding:12px 16px;font-size:13px;color:var(--ink-2)}
+.pfield b{color:var(--ink);font-weight:600}
+.hcell.other{opacity:.45;border-style:dashed}
+.hcell i{display:block;font-style:normal;font-size:10px;color:var(--ink-3);font-weight:600;letter-spacing:.03em}
 .drift{border:1px solid var(--mid);background:var(--mid-zone);border-radius:4px;padding:12px 16px;margin-bottom:24px;font-size:13.5px}
 .drift b{display:block;margin-bottom:4px}
 .field{border:1px solid var(--rule);border-radius:4px;background:var(--surface);padding:16px 18px;margin-bottom:24px}
@@ -76,7 +83,6 @@ main .wrap{padding-top:32px;padding-bottom:48px}
 .hcell{flex:0 0 auto;text-align:center;min-width:64px;padding:8px 10px;border:1px solid var(--rule);border-radius:4px}
 .hcell b{display:block;font-size:19px;font-weight:700;line-height:1.1}
 .hcell span{font-size:11px;color:var(--ink-3);font-weight:500}
-.hcell.engine-change{border-left:3px solid var(--ink-3)}
 .group{border-top:1px solid var(--rule-strong);padding-top:20px;margin-top:32px}
 .group-head{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline;justify-content:space-between}
 .group-name{margin:0;font-size:20px;font-weight:600;letter-spacing:-.012em}
@@ -187,11 +193,25 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     return vals.length?Math.round(vals.reduce(function(a,b){return a+b},0)/vals.length):null;
   }
 
-  // Runs before the switch to PageSpeed Insights carry no engine field; they
-  // were local Lighthouse runs. Scores from different engines run on different
-  // hardware and are not comparable, so no deltas are drawn across the switch.
-  function engineOf(r){return (r&&r.engine)||"lighthouse"}
-  function engineLabel(e){return e==="psi"?"PageSpeed Insights":e==="lighthouse"?"local Lighthouse":e}
+  var SOURCE_LABEL={psi:"PageSpeed Insights",cli:"Lighthouse (local machine)",
+    "cli-chat":"Lighthouse (chat session machine)","cli-routine":"Lighthouse (routine machine)",mixed:"mixed sources"};
+  function sourceOf(r){return (r&&r.source)||"cli"}
+
+  function cwvBadge(v){
+    if(v==="passed")return '<span class="cwv pass">Core Web Vitals: passed</span>';
+    if(v==="failed")return '<span class="cwv fail">Core Web Vitals: failed</span>';
+    return "";
+  }
+
+  // Real-user data for one page, when the page has enough traffic.
+  function pageFieldHTML(f){
+    if(!f||!f.metrics)return"";
+    var m=f.metrics,parts=[];
+    if(m.lcp)parts.push("LCP <b>"+esc(m.lcp.p75)+" s</b>");
+    if(m.inp)parts.push("INP <b>"+esc(m.inp.p75)+" ms</b>");
+    if(m.cls)parts.push("CLS <b>"+esc(m.cls.p75)+"</b>");
+    return '<div class="pfield">Real users on this page (p75, 28 days): '+parts.join(" · ")+cwvBadge(f.cwv)+'</div>';
+  }
 
   function spreadHTML(d){
     if(!d||!d.spread||d.spread.min===d.spread.max)return"";
@@ -231,6 +251,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
         deltaHTML(d.score,prevScore,d.spread)+spreadHTML(d)+'</p>'+
       '<a class="page-url" href="'+esc(p.url)+'" target="_blank" rel="noopener noreferrer">'+esc(p.url)+'</a>'+
       '</div></div>';
+    h+=pageFieldHTML(d.field);
     if(d.metrics){
       h+='<div class="rails">';
       METRICS.forEach(function(m){var v=d.metrics[m.key];if(typeof v==="number")h+=railHTML(m,v)});
@@ -261,7 +282,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     var f=c.field[strat];
     if(!f)return"";
     if(f.unavailable){
-      return '<div class="field"><h2>Field data (CrUX)</h2>'+
+      return '<div class="field"><h2>Real users — whole site (CrUX)</h2>'+
         '<p class="sub">Unavailable: '+esc(f.unavailable)+'</p></div>';
     }
     var period="";
@@ -269,9 +290,10 @@ main .wrap{padding-top:32px;padding-bottom:48px}
       var d=f.collectionPeriod.lastDate;
       period=" · through "+[d.year,String(d.month).padStart(2,"0"),String(d.day).padStart(2,"0")].join("-");
     }
-    var h='<div class="field"><h2>Field data (CrUX)</h2>'+
-      '<p class="sub">Real visits from Chrome users, 28-day rolling average'+esc(period)+
-      ' — unlike the Lighthouse score above, which is a lab measurement.</p><div class="fgrid">';
+    var h='<div class="field"><h2>Real users — whole site (CrUX)'+cwvBadge(f.cwv)+'</h2>'+
+      '<p class="sub">What Chrome users actually experienced over the last 28 days'+esc(period)+
+      '. This is the data Google uses for ranking. The lab scores below are single simulated '+
+      'visits — use them to find out why something is slow, not as the verdict.</p><div class="fgrid">';
     FIELD.forEach(function(m){
       var v=f.metrics&&f.metrics[m.key];
       if(!v)return;
@@ -311,15 +333,15 @@ main .wrap{padding-top:32px;padding-bottom:48px}
   function historyHTML(){
     if(runs.length<2)return"";
     var h='<div class="history"><h2>Measurement history</h2><div class="hrow">';
-    var shown=runs.slice(0,12).slice().reverse();
-    shown.forEach(function(r,i){
-      var s=runScore(r);
-      var changed=i>0&&engineOf(r)!==engineOf(shown[i-1]);
-      h+='<div class="hcell'+(changed?' engine-change':'')+'"'+
-         (changed?' title="Measured with '+esc(engineLabel(engineOf(r)))+' from here on — not comparable with earlier runs"':'')+
-         '><b style="color:'+(s===null?"var(--ink-3)":scoreColor(s))+'">'+
-         (s===null?"–":s)+'</b><span>'+esc((r.generated||"").slice(5))+'</span></div>';
+    var cur=sourceOf(runs[curIdx]);
+    runs.slice(0,12).slice().reverse().forEach(function(r){
+      var s=runScore(r),same=sourceOf(r)===cur;
+      h+='<div class="hcell'+(same?'':' other')+'" title="'+esc(SOURCE_LABEL[sourceOf(r)]||sourceOf(r))+'">'+
+         '<b style="color:'+(s===null?"var(--ink-3)":scoreColor(s))+'">'+(s===null?"–":s)+'</b>'+
+         '<span>'+esc((r.generated||"").slice(5))+'</span><i>'+(sourceOf(r)==="psi"?"PSI":"LOCAL")+'</i></div>';
     });
+    h+='</div><p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--ink-3)">Scores from different sources '+
+       '(dashed) come from different measuring machines and are not compared with each other.</p><div>';
     return h+'</div></div>';
   }
 
@@ -331,18 +353,18 @@ main .wrap{padding-top:32px;padding-bottom:48px}
         '<p>Run the performance skill to populate this report.</p></div>';
       return;
     }
-    var prev=runs[idx+1];
-    var engineChanged=!!prev&&engineOf(prev)!==engineOf(run);
+    var prev=null;
+    for(var k=idx+1;k<runs.length;k++){if(sourceOf(runs[k])===sourceOf(run)){prev=runs[k];break;}}
     var prevByName={};
-    if(prev&&!engineChanged)(prev.groups||[]).forEach(function(g){
+    if(prev)(prev.groups||[]).forEach(function(g){
       var v=view((g.pages||[])[0]);
       if(v&&typeof v.score==="number")prevByName[g.name]=v.score;
     });
 
-    $("siteName").textContent=run.site||"Performanse sajta";
+    $("siteName").textContent=run.site||"Site performance";
     var meta=[];
     if(run.generated)meta.push(run.generated);
-    meta.push(engineLabel(engineOf(run))+(run.lighthouseVersion?" · Lighthouse "+run.lighthouseVersion:""));
+    meta.push("Lab: "+(SOURCE_LABEL[sourceOf(run)]||sourceOf(run)));
     if(run.skipped&&run.skipped.length)
       meta.push(run.skipped.length+" group(s) skipped: "+run.skipped.map(function(x){return x.name}).join(", "));
     $("runMeta").innerHTML=meta.map(function(m){return"<span>"+esc(m)+"</span>"}).join("");
@@ -358,12 +380,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     $("spreadCount").textContent=groups.length+" groups · "+total+" pages · "+measured+" measured";
     $("spread").hidden=groups.length===0;
 
-    var engineNote=engineChanged
-      ?'<div class="drift"><b>Measuring method changed</b>This run was measured with '+esc(engineLabel(engineOf(run)))+
-        ', the previous one with '+esc(engineLabel(engineOf(prev)))+
-        '. They run on different hardware, so score changes against earlier runs are not shown — compare forward from here.</div>'
-      :'';
-    var out=engineNote+driftHTML(run)+fieldHTML(run)+historyHTML();
+    var out=driftHTML(run)+fieldHTML(run)+historyHTML();
     groups.forEach(function(g){
       var t=typeof g.totalPages==="number"?g.totalPages:(g.pages||[]).length,n=(g.pages||[]).length;
       var flag=g.provisional?'<span class="flag">new section · unreviewed sample</span>'

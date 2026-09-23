@@ -82,21 +82,21 @@ This is an unattended run. Nobody is available to answer questions, so follow th
 "Unattended runs" section strictly:
 
 - Process the sites one at a time, finishing each one (crawl, group, apply config, measure
-  mobile and desktop with --runs 3, merge, write) before starting the next.
+  mobile and desktop with --runs 5, merge, write) before starting the next.
 - For each site, first read two things from its dashboard's database: the saved grouping
   config (collection "config", doc "groups") and the latest run (collection "runs", ordered by
   generatedAt descending, limit 1). If there is no config, skip that site. Pass the latest run
   to apply-config.js with --previous.
 - If apply-config.js reports a site structure change, measure every group it returns,
   including provisional new sections and sections retried on the previous run's URL.
-- Measure with audit.js through PageSpeed Insights: split the groups with split.js --size 5
+- Measure with audit.js through PageSpeed Insights: split the groups with split.js --size 4
   and run audit.js once per chunk (mobile and desktop together, the default), with
   --deadline 540, giving each command a 600000 ms shell timeout. Then merge the chunks.
 - If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop: don't measure the
   remaining sites, and put that at the top of the summary.
-- If a group is skipped for "time budget", comes back incomplete, reports "only 2/3 runs
-  succeeded", or shows a spread wider than 10 points, rerun that group on its own once and pass
-  the rerun to merge.js after the original chunk.
+- If a group is skipped for "time budget", comes back incomplete, or had fewer than 4 of 5
+  runs succeed, rerun that group on its own once and pass the rerun to merge.js after the
+  original chunk. A wide spread alone is normal for PSI and is not a reason to rerun.
 - Write the finished run to the dashboard listed in sites.json with write_db, collection
   "runs", doc_id set to the run timestamp with colons replaced by dashes.
 - Do not publish or republish any artifact. Do not change any config. Do not modify, commit
@@ -146,12 +146,11 @@ job unattended, and the fallback is to keep running updates from chat.
 ## 6. Expect one step change in the history
 
 Earlier runs were local Lighthouse on whatever machine ran the skill; runs are now measured by
-PageSpeed Insights on Google's hardware and carry `engine: "psi"`. Scores depend on the measuring
+PageSpeed Insights on Google's hardware and carry `source: "psi"`. Scores depend on the measuring
 machine, so the first PSI run can shift every score by several points — or more — without the
-sites changing. The dashboard marks that run with a "Measuring method changed" note, draws no
-score deltas across the switch, and puts a divider in the history row. Treat the first PSI run
-as the new baseline and compare forward from there.
+sites changing. The dashboard labels each run's source, shows runs from other sources dashed in
+the history row, and only compares runs of the same source. Treat the first PSI run as the new
+baseline and compare forward from there.
 
-This needs the updated `assets/dashboard.html` published to each dashboard once, from chat (the
-routine never republishes). Until then the old page still reads the new runs fine; it just
-shows a misleading delta on the first PSI run.
+`assets/dashboard.html` in this repository is the page currently published on the four
+dashboards; the routine never republishes it.

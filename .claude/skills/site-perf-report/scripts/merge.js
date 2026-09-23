@@ -77,12 +77,14 @@ for (const x of incomplete) {
 }
 // A group skipped in one chunk but measured in another (a rerun) isn't skipped.
 const stillSkipped = skipped.filter(x => !groups.some(g => g.name === x.name));
-const engines = [...new Set(runs.map(r => r.engine || "lighthouse"))];
+const engines = [...new Set(runs.map(r => r.engine || (r.source === "psi" ? "psi" : "lighthouse")))];
+const sources = [...new Set(runs.map(r => r.source || (r.engine === "psi" ? "psi" : "cli")))];
 if (engines.length > 1) console.error(`merge: WARNING — mixing measurements from ${engines.join(" and ")}`);
 
 const merged = {
   site: runs[0].site,
   origin: runs.map(r => r.origin).find(Boolean) || ("https://" + runs[0].site),
+  source: sources.length === 1 ? sources[0] : "mixed",
   engine: engines.length === 1 ? engines[0] : engines.join("+"),
   lighthouseVersion: runs.map(r => r.lighthouseVersion).find(Boolean) || null,
   strategies,
