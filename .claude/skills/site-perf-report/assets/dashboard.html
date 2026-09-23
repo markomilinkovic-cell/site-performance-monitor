@@ -195,7 +195,8 @@ main .wrap{padding-top:32px;padding-bottom:48px}
 
   var SOURCE_LABEL={psi:"PageSpeed Insights",cli:"Lighthouse (local machine)",
     "cli-chat":"Lighthouse (chat session machine)","cli-routine":"Lighthouse (routine machine)",mixed:"mixed sources"};
-  function sourceOf(r){return (r&&r.source)||"cli"}
+  // Early PSI runs carried only engine:"psi"; treat them as PSI too.
+  function sourceOf(r){return (r&&r.source)||(r&&r.engine==="psi"?"psi":"cli")}
 
   function cwvBadge(v){
     if(v==="passed")return '<span class="cwv pass">Core Web Vitals: passed</span>';
@@ -213,8 +214,17 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     return '<div class="pfield">Real users on this page (p75, 28 days): '+parts.join(" · ")+cwvBadge(f.cwv)+'</div>';
   }
 
+  // With pooled bursts the typical range (narrowest interval holding 60% of
+  // the runs) is shown; the full min-max range stays in the tooltip, because
+  // one slow run on Google's side would otherwise set it.
   function spreadHTML(d){
-    if(!d||!d.spread||d.spread.min===d.spread.max)return"";
+    if(!d)return"";
+    var runsTxt="median of "+(d.runs||"?")+(d.bursts>1?" runs in "+d.bursts+" bursts":"");
+    if(d.typical&&typeof d.typical.lo==="number"){
+      var full=d.spread?" \u00b7 all runs "+d.spread.min+"\u2013"+d.spread.max:"";
+      return '<span class="spread-note" title="'+esc(runsTxt+full)+'">'+esc(runsTxt)+', typical '+d.typical.lo+'\u2013'+d.typical.hi+'</span>';
+    }
+    if(!d.spread||d.spread.min===d.spread.max)return"";
     return '<span class="spread-note">median of '+(d.runs||"?")+', range '+d.spread.min+'\u2013'+d.spread.max+'</span>';
   }
 
@@ -232,23 +242,29 @@ main .wrap{padding-top:32px;padding-bottom:48px}
   // Lighthouse noise is a few points, so a small delta means nothing. Only
   // colour a change that is bigger than the measured spread (or 5 points when
   // no spread was recorded); otherwise call it noise.
-  function deltaHTML(cur,prev,spread){
+  // When both runs have a typical range, a change is only real if the two
+  // ranges don't overlap: overlapping ranges mean the pages performed the same
+  // and the medians just landed differently.
+  function deltaHTML(curBlock,prevBlock){
+    var cur=curBlock&&curBlock.score,prev=prevBlock&&prevBlock.score;
     if(typeof prev!=="number"||typeof cur!=="number")return"";
     var d=cur-prev;
     if(d===0)return'<span class="delta" style="color:var(--ink-3)">no change</span>';
-    var band=spread&&typeof spread.min==="number"?Math.max(3,spread.max-spread.min):5;
-    if(Math.abs(d)<=band)
+    var a=curBlock.typical,b=prevBlock.typical,noise;
+    if(a&&b&&typeof a.lo==="number"&&typeof b.lo==="number")noise=a.lo<=b.hi&&b.lo<=a.hi;
+    else{var spread=curBlock.spread;var band=spread&&typeof spread.min==="number"?Math.max(3,spread.max-spread.min):5;noise=Math.abs(d)<=band}
+    if(noise)
       return '<span class="delta" style="color:var(--ink-3)">'+(d>0?"+":"")+d+' (within noise)</span>';
     return '<span class="delta" style="color:'+(d>0?"var(--good)":"var(--bad)")+'">'+(d>0?"+":"")+d+'</span>';
   }
 
-  function pageHTML(p,prevScore){
+  function pageHTML(p,prevBlock){
     var d=view(p);
     if(!d)return"";
     var h='<article class="page"><div class="page-head">'+
       '<div class="score" style="color:'+scoreColor(d.score)+'">'+esc(d.score)+'</div>'+
       '<div class="page-id"><p class="page-title">'+esc(p.title||p.url)+
-        deltaHTML(d.score,prevScore,d.spread)+spreadHTML(d)+'</p>'+
+        deltaHTML(d,prevBlock)+spreadHTML(d)+'</p>'+
       '<a class="page-url" href="'+esc(p.url)+'" target="_blank" rel="noopener noreferrer">'+esc(p.url)+'</a>'+
       '</div></div>';
     h+=pageFieldHTML(d.field);
@@ -358,7 +374,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     var prevByName={};
     if(prev)(prev.groups||[]).forEach(function(g){
       var v=view((g.pages||[])[0]);
-      if(v&&typeof v.score==="number")prevByName[g.name]=v.score;
+      if(v&&typeof v.score==="number")prevByName[g.name]=v;
     });
 
     $("siteName").textContent=run.site||"Site performance";

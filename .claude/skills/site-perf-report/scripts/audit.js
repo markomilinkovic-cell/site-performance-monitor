@@ -4,7 +4,7 @@
 //
 // Usage: PSI_API_KEY=... node audit.js groups.json
 //          [--strategy both|mobile|desktop] [--runs 5] [--concurrency 10]
-//          [--deadline 270] [--out run.json]
+//          [--deadline 270] [--burst 1] [--out run.json]
 //
 // PSI runs Lighthouse on Google's own machines, so nothing is installed here
 // and the local CPU no longer feeds into the score. Each call takes 20-90s,
@@ -19,17 +19,24 @@
 // crux.js produces, so the dashboard shows it without a separate key.
 
 const fs = require("fs");
+const path = require("path");
+const { summarise } = require(path.join(__dirname, "stats.js"));
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = ["--strategy", "--runs", "--concurrency", "--deadline", "--out"];
+const VALUE_FLAGS = ["--strategy", "--runs", "--concurrency", "--deadline", "--burst", "--out"];
 const input = args.find((a, i) => !a.startsWith("--") && !VALUE_FLAGS.includes(args[i - 1]));
 const getFlag = (n, d) => { const i = args.indexOf("--" + n); return i === -1 ? d : args[i + 1]; };
 const STRATEGY = getFlag("strategy", "both");
 const RUNS = Math.max(1, parseInt(getFlag("runs", "5"), 10));
+// 10 parallel calls ran without errors; at 20, a third of the calls failed or
+// timed out (PSI slows down and answers 500), so raising this doesn't help.
 const CONCURRENCY = Math.max(1, parseInt(getFlag("concurrency", "10"), 10));
 // Stop starting new calls after this many seconds and write what we have.
 // 270 fits the 300s command limit in claude.ai chat; lower it for shorter limits.
 const DEADLINE_S = Math.max(30, parseInt(getFlag("deadline", "270"), 10));
+// Which burst this command is. Samples carry it, so merge.js can pool several
+// bursts measured at different times into one result per page.
+const BURST = Math.max(1, parseInt(getFlag("burst", "1"), 10));
 const OUT = getFlag("out", null);
 const KEY = process.env.PSI_API_KEY || "";
 // In a Claude Code cloud environment the key can be stored as an API credential
@@ -39,7 +46,7 @@ const KEY_FROM_PROXY = /^(1|true|yes)$/i.test(process.env.PSI_KEY_FROM_PROXY || 
 
 if (!input) {
   console.error("usage: PSI_API_KEY=... node audit.js groups.json [--strategy both|mobile|desktop] " +
-    "[--runs 5] [--concurrency 10] [--deadline 270] [--out run.json]");
+    "[--runs 5] [--concurrency 10] [--deadline 270] [--burst 1] [--out run.json]");
   process.exit(1);
 }
 if (!KEY && !KEY_FROM_PROXY) {
@@ -255,23 +262,31 @@ function reason(e) {
   return redact((e && e.message) || e || "unknown").split("\n")[0].slice(0, 200);
 }
 
-// Lab scores still vary between runs, even on Google's hardware (network,
-// server response). Take the median of N runs and carry the spread so a reader
-// can tell a real regression from noise.
-function summarise(results, runs, label) {
-  const sorted = [...results].sort((x, y) => x.score - y.score);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  const scores = sorted.map(r => r.score);
-  if (results.length < runs) {
-    process.stderr.write(`    ${label}: only ${results.length}/${runs} runs succeeded — spread below is less reliable\n`);
+// Lab scores vary a lot between runs, even on Google's hardware. Each run is
+// kept as a sample; stats.js turns the samples into median, typical range and
+// spread, so several bursts can later be pooled by merge.js.
+let sampleSeq = 0;
+function toSample(r, strategy) {
+  return {
+    id: `b${BURST}-${strategy}-${Date.now().toString(36)}-${(sampleSeq++).toString(36)}`,
+    burst: BURST,
+    at: new Date().toISOString(),
+    score: r.score,
+    metrics: r.metrics,
+    bi: r.benchmarkIndex,
+    lhv: r.lighthouseVersion,
+    opportunities: r.opportunities
+  };
+}
+
+function block(results, strategy, label) {
+  if (results.length < RUNS) {
+    process.stderr.write(`    ${label}: only ${results.length}/${RUNS} runs succeeded\n`);
   }
-  const { originField, ...rest } = median;
-  if (!rest.field) delete rest.field;
-  return Object.assign(rest, {
-    runs: results.length,
-    spread: scores.length > 1 ? { min: scores[0], max: scores[scores.length - 1] } : null,
-    allScores: scores
-  });
+  const b = summarise(results.map(r => toSample(r, strategy)));
+  const withField = results.find(r => r.field);
+  if (withField) b.field = withField.field;
+  return b;
 }
 
 const originField = {};   // strategy -> parsed origin CrUX, from any successful call
@@ -298,7 +313,7 @@ async function measureUrl(g, url) {
     for (const b of bad) process.stderr.write(`    ${g.name} [${s}] run ${b.i + 1}/${RUNS} failed: ${reason(b.e)}\n`);
     if (ok.length) {
       if (!originField[s]) originField[s] = ok.find(r => r.originField)?.originField || null;
-      result[s] = summarise(ok, RUNS, `${g.name} [${s}]`);
+      result[s] = block(ok, s, `${g.name} [${s}]`);
     } else {
       failures[s] = bad[0] && bad[0].e;
     }
@@ -324,13 +339,13 @@ async function measureGroup(g) {
       lastErr = lastErr || new AuditError(c.reason, "dead");
       continue;
     }
-    process.stderr.write(`audit: ${g.name} -> ${u} (${STRATEGIES.join(" + ")}, ${RUNS} run${RUNS > 1 ? "s" : ""} each)\n`);
+    process.stderr.write(`audit: ${g.name} -> ${u} (burst ${BURST}, ${STRATEGIES.join(" + ")}, ${RUNS} run${RUNS > 1 ? "s" : ""} each)\n`);
     const { result, failures } = await measureUrl(g, u);
     const got = Object.keys(result);
     if (got.length === STRATEGIES.length) {
       process.stderr.write(`audit: ${g.name} ` + got.map(s => {
-        const sp = result[s].spread;
-        return `${s} ${result[s].score}${sp && sp.min !== sp.max ? ` (${sp.min}–${sp.max})` : ""}`;
+        const t = result[s].typical, sp = result[s].spread;
+        return `${s} ${result[s].score}` + (t ? ` (typical ${t.lo}–${t.hi})` : sp && sp.min !== sp.max ? ` (${sp.min}–${sp.max})` : "");
       }).join(", ") + "\n");
       return { ok: true, page: Object.assign({ url: u, title: g.name }, result) };
     }
@@ -391,6 +406,7 @@ async function measureGroup(g) {
     lighthouseVersion,
     strategies: STRATEGIES,
     runsPerPage: RUNS,
+    burst: BURST,
     generated: new Date().toISOString().slice(0, 10),
     generatedAt: new Date().toISOString(),
     groups,

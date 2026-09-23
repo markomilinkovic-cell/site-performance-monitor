@@ -138,54 +138,76 @@ config needs to know why. Write it with `write_db`, `set`, collection `config`, 
 
 Default to 5–9 groups. More than that gets slow without adding much.
 
-### 4. Measure both form factors
+### 4. Measure both form factors, in five bursts
 
 Measure mobile and desktop. They are scored separately by Google and routinely differ by 30
 points on the same page — a site can look fine on desktop while failing on mobile, and
 reporting only one number hides that.
 
-`--runs 5` (the default) measures each page five times and keeps the median, because a single
-run is noisy even on Google's hardware (see "Things worth telling the user").
+**Why bursts.** PSI results drift over minutes, not just between calls: two identical 10-run
+batches of trafft.com two minutes apart had desktop medians 89.5 and 81, and their typical
+ranges didn't overlap (TBT median 166 vs 339 ms). More runs in one moment only shrink the noise
+of that moment. So each page is measured in **5 bursts of 5 runs** (`--runs 5`, the default),
+bursts spread across the session, and `merge.js` pools all 25 runs per page and form factor into
+the median, the typical range (narrowest interval holding 60% of the runs) and the full spread.
+Every run is kept in the run document as a sample.
 
-**How the time works.** One PSI call takes 15–80s, but `audit.js` runs calls in parallel
-(`--concurrency 10` by default), so a group measured on both form factors with five runs each
-costs about one call's worth of wall time per ten calls. Measure both strategies **in the same command**
-(`--strategy both`, the default): the script then settles on one working URL per group and uses it
-for both, so there's no mobile-then-desktop hand-off to manage.
+**How the time works.** One PSI call takes 15–80s; `audit.js` runs 10 in parallel
+(`--concurrency 10`; at 20, a third of the calls failed or timed out, so don't raise it). That is
+~10–20 calls a minute. One burst of one group is 10 calls (5 runs × 2 form factors).
 
 **Budget the commands.** Commands have a time limit — 300s in claude.ai chat; in Claude Code the
 shell tool's timeout, which is 2 minutes unless a longer one (up to 10 minutes) is passed.
 `--deadline` (seconds, default 270) makes `audit.js` stop starting new calls before the limit and
-still write its output; groups it didn't get to are listed as skipped with "time budget", and
-groups that got fewer runs than asked log `only N/5 runs succeeded`. Keep `--deadline` about 30s
-under the command limit, and chunk the groups so a chunk comfortably fits:
+still write its output. Chunk the groups so a chunk fits:
 
 - claude.ai chat: `--size 2`, `--deadline 270`
-- Claude Code: pass a 600000 ms timeout to the shell tool, then `--size 4`, `--deadline 540`
+- Claude Code: pass a 600000 ms timeout to the shell tool, then `--size 5`, `--deadline 540`
+
+**Burst 1** settles which URL each group is measured on (preflight, candidate fallback); every
+later burst must measure exactly those URLs, so it uses `resolve.js`'s output:
 
 ```bash
-# 1. chunks that fit one command each
-node scripts/split.js /tmp/groups-final.json --size 2 --prefix /tmp/g-
+# chunks that fit one command each
+node scripts/split.js /tmp/groups-final.json --size 5 --prefix /tmp/g-
 
-# 2. both form factors per chunk, one command per chunk
-PSI_API_KEY=... node scripts/audit.js /tmp/g-0.json --out /tmp/a-0.json
-PSI_API_KEY=... node scripts/audit.js /tmp/g-1.json --out /tmp/a-1.json
-# ... one per chunk
+# burst 1, one command per chunk
+node scripts/audit.js /tmp/g-0.json --burst 1 --out /tmp/b1-0.json
+node scripts/audit.js /tmp/g-1.json --burst 1 --out /tmp/b1-1.json
 
-# 3. one run document
-node scripts/merge.js /tmp/a-*.json --out /tmp/run.json
+# fix the URLs for the later bursts
+node scripts/resolve.js /tmp/groups-final.json /tmp/b1-*.json --out /tmp/fixed.json
+node scripts/split.js /tmp/fixed.json --size 5 --prefix /tmp/f-
+
+# bursts 2..5 — the same chunks again, later
+node scripts/audit.js /tmp/f-0.json --burst 2 --out /tmp/b2-0.json
+# ...
+
+# one run document from every burst and chunk
+node scripts/merge.js /tmp/b*-*.json --out /tmp/run.json
 ```
 
-If a group was skipped for time, or came back incomplete (one form factor missing), or logged
-fewer than 4 of 5 runs succeeded, rerun just that group — put it in its
-own groups file, measure it, and pass the rerun to `merge.js` **after** the original chunk; the
-later file wins, and `merge.js` drops a group from `skipped`/`incomplete` once a rerun covers it.
-If a command is killed by the shell before `--deadline`, its output file is never written — rerun
-that chunk with a lower `--deadline` or smaller `--size`.
+(`PSI_API_KEY=...` in front of each `audit.js` when the key isn't already in the environment.)
 
-`--strategy mobile` / `desktop` still work for a single form factor. If you ever measure them in
-separate commands, run `scripts/resolve.js` between them so desktop measures the URL mobile ended
-up on.
+**Spacing.** The point is time between bursts. With several sites, interleave them: burst 1 of
+every site, then burst 2 of every site, and so on — with four sites a round takes ~15 minutes, so
+each page is sampled across about an hour. With a single site, wait between bursts instead
+(`sleep 600` between them, ten minutes, as its own command).
+
+**Write early, overwrite later.** `merge.js` sets `generatedAt` to the first burst's start, so
+every merge of the same measurement has the same doc id. Write a provisional run after burst 1
+and again after bursts 3 and 5 (same doc id, `set` replaces it). If the session ends early, the
+dashboard still has the bursts measured so far; the run shows how many.
+
+**Reruns.** A group skipped for time, or with a form factor missing in a burst, simply has fewer
+samples; the pooled result is still valid. Only if a group ends with fewer than 15 runs on a form
+factor, measure it once more (its own groups file from `fixed.json`, `--burst 6`) and merge again
+with that file included — samples are added, never replaced. A wide spread alone is normal for PSI
+and is not a reason to rerun. If a command is killed by the shell before `--deadline`, its output
+file is never written — rerun that chunk with a lower `--deadline` or smaller `--size`.
+
+`--strategy mobile` / `desktop` still work for a single form factor; keep both form factors in
+the same command so they're measured on the same URL.
 
 Two failures are handled automatically, and both are worth reporting because they say
 something real about the site:
@@ -258,29 +280,34 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 - **Don't change the config.** Only an interactive session updates it.
 - **If `audit.js` exits with code 3** (key rejected or daily PSI quota used up), stop measuring
   every remaining site — they would all fail the same way — and say so at the top of the summary.
-- **Measure one site at a time and finish it** (crawl → group → measure → merge → write)
-  before starting the next, so a failure late in the run still leaves the earlier sites
-  updated.
-- **End with a summary**: per site, whether it was written, the median mobile and desktop score
-  per group, any skipped groups with reasons, and any drift. That summary is the only place a
+- **Prepare every site first** (read config and last run → crawl → group → apply config), then
+  **measure in five rounds**: round k runs burst k of every site in turn. After rounds 1, 3 and 5,
+  merge and write each site's run (same doc id each time). A session that stops midway still
+  leaves every site with the bursts measured so far.
+- **End with a summary**: per site, whether it was written and with how many bursts, the median
+  and typical range for mobile and desktop per group, any skipped groups with reasons, and any
+  drift. That summary is the only place a
   human will see problems.
 
 ## Things worth telling the user
 
 - **Lighthouse is a lab measurement, and it is noisy — on PSI too.** PSI takes the measuring
   machine out of our hands, but Google's machines still vary. Five PSI runs of trafft.com's
-  homepage started at the same moment scored 58–75 on mobile and 68–95 on desktop. On desktop
-  the spread came through TBT (84–630 ms), following the CPU speed of the machine Google assigned
-  (`benchmarkIndex` 598–1166); on mobile through FCP/LCP (FCP 2.9–3.9 s), i.e. how fast the
-  server answered that particular request.
+  homepage started at the same moment scored 58–75 on mobile and 68–95 on desktop. The spread
+  comes through TBT (desktop 84–630 ms), following the CPU speed of the machine Google assigned
+  (`benchmarkIndex` 598–1166). It is not the server: across 26 later runs the lab TTFB stayed
+  around 7 ms (Google hits the CDN cache) and the FCP median stayed at 2.9 s. (Slow TTFB in the
+  CrUX block is real, but it's what real visitors get, not the lab.)
   So **a single run on pagespeed.web.dev differing from the dashboard by ~10 points is expected**
-  — the web UI is one draw from that range, the dashboard is the median of five.
-  That is why `--runs` defaults to 5 and the report stores the median plus the observed spread.
+  — the web UI is one draw from that range, the dashboard is the median of 25 runs in 5 bursts.
+  Neither more runs nor a different statistic brings this to zero: the conditions on Google's
+  side change within minutes. Five bursts roughly halve the week-to-week wobble of the median.
   Wide spreads are normal here; don't rerun a group just because its spread is wide.
-  Tell the user to read a change against that spread: if the score moved less than the spread,
-  nothing happened. The dashboard already labels such changes "u okviru šuma".
-  For a suspected regression, compare the raw metrics rather than the score — a real regression
-  shows up as a moved LCP or a genuinely larger TBT, not as a 4-point score wobble.
+- **Read changes against the typical range, not the median alone.** The dashboard calls a
+  change real only when this run's typical range and the previous run's don't overlap; otherwise
+  it says "within noise". For a suspected regression, compare the raw metrics rather than the
+  score — a real regression shows up as a moved LCP or a genuinely larger TBT, not as a 4-point
+  score wobble.
 - **Scores measured before the switch to PSI aren't comparable with PSI scores.** Older runs
   were local Lighthouse on whatever machine ran the skill. Runs now carry `source: "psi"` (and
   `engine: "psi"`); the dashboard labels each run's source, shows other-source runs dashed in the
@@ -300,8 +327,8 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 - `scripts/audit.js` — PageSpeed Insights over samples, both form factors, parallel; attaches
   CrUX origin data (needs `PSI_API_KEY`)
 - `scripts/split.js` — splits a groups file into chunks that fit a command's time limit
-- `scripts/resolve.js` — hands desktop the exact URLs mobile measured (only needed when the two
-  form factors are measured in separate commands)
-- `scripts/merge.js` — combines chunks and reruns into the run document the dashboard reads
+- `scripts/resolve.js` — fixes each group's URL after burst 1, so later bursts measure the same pages
+- `scripts/merge.js` — pools chunks, bursts and reruns into the run document the dashboard reads
+- `scripts/stats.js` — median, typical range and sample pooling, shared by audit.js and merge.js
 - `scripts/crux.js` — legacy: CrUX via its own API (`CRUX_API_KEY`); PSI already supplies this
 - `assets/dashboard.html` — the dashboard page, published once per site

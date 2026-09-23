@@ -81,31 +81,33 @@ site-perf-report skill in .claude/skills/site-perf-report/.
 This is an unattended run. Nobody is available to answer questions, so follow the skill's
 "Unattended runs" section strictly:
 
-- Process the sites one at a time, finishing each one (crawl, group, apply config, measure
-  mobile and desktop with --runs 5, merge, write) before starting the next.
-- For each site, first read two things from its dashboard's database: the saved grouping
+- Prepare every site first: read two things from its dashboard's database — the saved grouping
   config (collection "config", doc "groups") and the latest run (collection "runs", ordered by
-  generatedAt descending, limit 1). If there is no config, skip that site. Pass the latest run
-  to apply-config.js with --previous.
-- If apply-config.js reports a site structure change, measure every group it returns,
-  including provisional new sections and sections retried on the previous run's URL.
-- Measure with audit.js through PageSpeed Insights: split the groups with split.js --size 4
-  and run audit.js once per chunk (mobile and desktop together, the default), with
-  --deadline 540, giving each command a 600000 ms shell timeout. Then merge the chunks.
-- If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop: don't measure the
-  remaining sites, and put that at the top of the summary.
-- If a group is skipped for "time budget", comes back incomplete, or had fewer than 4 of 5
-  runs succeed, rerun that group on its own once and pass the rerun to merge.js after the
-  original chunk. A wide spread alone is normal for PSI and is not a reason to rerun.
-- Write the finished run to the dashboard listed in sites.json with write_db, collection
-  "runs", doc_id set to the run timestamp with colons replaced by dashes.
+  generatedAt descending, limit 1). If there is no config, skip that site. Then crawl, group, and
+  run apply-config.js with --previous set to that latest run. If apply-config.js reports a site
+  structure change, measure every group it returns, including provisional new sections and
+  sections retried on the previous run's URL.
+- Then measure in five rounds. Round k runs burst k for every site in turn, with audit.js
+  --runs 5 --burst k (mobile and desktop together, the default), --deadline 540, a 600000 ms
+  shell timeout per command, and chunks from split.js --size 5. After burst 1 of a site, run
+  resolve.js on its burst-1 outputs and use that fixed groups file for bursts 2-5, so every burst
+  measures the same URLs.
+- After rounds 1, 3 and 5, merge each site's burst files so far with merge.js and write the result
+  to the dashboard listed in sites.json with write_db, collection "runs", doc_id set to the merged
+  run's generatedAt to the second, colons replaced by dashes (for example 2026-09-28T06-00-12Z).
+  generatedAt stays the same across the three merges, so each write replaces the previous one.
+- If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop measuring, write what
+  has been measured so far, and put that at the top of the summary.
+- A group skipped for "time budget" or incomplete in one burst just has fewer runs. Only if a
+  group ends with fewer than 15 runs on a form factor, measure it once more with --burst 6 and
+  merge again. A wide spread alone is normal for PSI and is not a reason to rerun.
 - Do not publish or republish any artifact. Do not change any config. Do not modify, commit
   or push anything in the repository.
 
-Finish with a summary: for each site, whether the run was written or skipped and why, the
-median mobile and desktop score per group, any skipped groups with the reason, and any site
-structure drift reported by apply-config.js: which sections are new (measured with an
-unreviewed sample) and which vanished (and whether their previous page still worked).
+Finish with a summary: for each site, whether the run was written and with how many bursts, the
+median and typical range for mobile and desktop per group, any skipped groups with the reason,
+and any site structure drift reported by apply-config.js: which sections are new (measured with
+an unreviewed sample) and which vanished (and whether their previous page still worked).
 ```
 
 ## 4. Before relying on it: what hasn't been verified
@@ -121,9 +123,11 @@ be confirmed by a real run:
 2. **Whether the PSI key reaches PSI.** With the API credential option, the first call answering
    "daily quota exhausted" means the proxy didn't attach the key (a keyless call lands on
    Google's shared quota, which is always used up) — check the credential's host and header.
-3. **How long one session may run.** With PSI a full pass is ~170 API calls, run in parallel —
-   roughly 5 to 10 minutes of measuring for all four sites, instead of the 1.5 to 2 hours local
-   Lighthouse needed.
+3. **How long one session may run.** A full pass is 5 bursts × 5 runs × 2 form factors over 29
+   groups: ~1,450 PSI calls, about 5% of one day's free quota. At the measured 10–20 calls a
+   minute that is roughly 75–120 minutes, plus ~10 minutes of crawling and preparation. The
+   provisional writes after rounds 1 and 3 mean a session cut short still updates every
+   dashboard with the bursts it finished.
 4. **The shell's command time limit.** The prompt asks for a 600000 ms (10 minute) timeout per
    command and `--deadline 540`. If the transcript shows commands killed before that, lower
    `--size` and `--deadline` in the prompt.
