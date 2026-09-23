@@ -76,6 +76,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
 .hcell{flex:0 0 auto;text-align:center;min-width:64px;padding:8px 10px;border:1px solid var(--rule);border-radius:4px}
 .hcell b{display:block;font-size:19px;font-weight:700;line-height:1.1}
 .hcell span{font-size:11px;color:var(--ink-3);font-weight:500}
+.hcell.engine-change{border-left:3px solid var(--ink-3)}
 .group{border-top:1px solid var(--rule-strong);padding-top:20px;margin-top:32px}
 .group-head{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline;justify-content:space-between}
 .group-name{margin:0;font-size:20px;font-weight:600;letter-spacing:-.012em}
@@ -185,6 +186,12 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     var vals=(r.groups||[]).map(groupScore).filter(function(v){return v!==null});
     return vals.length?Math.round(vals.reduce(function(a,b){return a+b},0)/vals.length):null;
   }
+
+  // Runs before the switch to PageSpeed Insights carry no engine field; they
+  // were local Lighthouse runs. Scores from different engines run on different
+  // hardware and are not comparable, so no deltas are drawn across the switch.
+  function engineOf(r){return (r&&r.engine)||"lighthouse"}
+  function engineLabel(e){return e==="psi"?"PageSpeed Insights":e==="lighthouse"?"local Lighthouse":e}
 
   function spreadHTML(d){
     if(!d||!d.spread||d.spread.min===d.spread.max)return"";
@@ -304,9 +311,13 @@ main .wrap{padding-top:32px;padding-bottom:48px}
   function historyHTML(){
     if(runs.length<2)return"";
     var h='<div class="history"><h2>Measurement history</h2><div class="hrow">';
-    runs.slice(0,12).slice().reverse().forEach(function(r){
+    var shown=runs.slice(0,12).slice().reverse();
+    shown.forEach(function(r,i){
       var s=runScore(r);
-      h+='<div class="hcell"><b style="color:'+(s===null?"var(--ink-3)":scoreColor(s))+'">'+
+      var changed=i>0&&engineOf(r)!==engineOf(shown[i-1]);
+      h+='<div class="hcell'+(changed?' engine-change':'')+'"'+
+         (changed?' title="Measured with '+esc(engineLabel(engineOf(r)))+' from here on — not comparable with earlier runs"':'')+
+         '><b style="color:'+(s===null?"var(--ink-3)":scoreColor(s))+'">'+
          (s===null?"–":s)+'</b><span>'+esc((r.generated||"").slice(5))+'</span></div>';
     });
     return h+'</div></div>';
@@ -321,8 +332,9 @@ main .wrap{padding-top:32px;padding-bottom:48px}
       return;
     }
     var prev=runs[idx+1];
+    var engineChanged=!!prev&&engineOf(prev)!==engineOf(run);
     var prevByName={};
-    if(prev)(prev.groups||[]).forEach(function(g){
+    if(prev&&!engineChanged)(prev.groups||[]).forEach(function(g){
       var v=view((g.pages||[])[0]);
       if(v&&typeof v.score==="number")prevByName[g.name]=v.score;
     });
@@ -330,6 +342,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     $("siteName").textContent=run.site||"Performanse sajta";
     var meta=[];
     if(run.generated)meta.push(run.generated);
+    meta.push(engineLabel(engineOf(run))+(run.lighthouseVersion?" · Lighthouse "+run.lighthouseVersion:""));
     if(run.skipped&&run.skipped.length)
       meta.push(run.skipped.length+" group(s) skipped: "+run.skipped.map(function(x){return x.name}).join(", "));
     $("runMeta").innerHTML=meta.map(function(m){return"<span>"+esc(m)+"</span>"}).join("");
@@ -345,7 +358,12 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     $("spreadCount").textContent=groups.length+" groups · "+total+" pages · "+measured+" measured";
     $("spread").hidden=groups.length===0;
 
-    var out=driftHTML(run)+fieldHTML(run)+historyHTML();
+    var engineNote=engineChanged
+      ?'<div class="drift"><b>Measuring method changed</b>This run was measured with '+esc(engineLabel(engineOf(run)))+
+        ', the previous one with '+esc(engineLabel(engineOf(prev)))+
+        '. They run on different hardware, so score changes against earlier runs are not shown — compare forward from here.</div>'
+      :'';
+    var out=engineNote+driftHTML(run)+fieldHTML(run)+historyHTML();
     groups.forEach(function(g){
       var t=typeof g.totalPages==="number"?g.totalPages:(g.pages||[]).length,n=(g.pages||[]).length;
       var flag=g.provisional?'<span class="flag">new section · unreviewed sample</span>'

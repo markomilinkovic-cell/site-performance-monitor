@@ -1,11 +1,12 @@
 ---
 name: site-perf-report
-description: Measures website performance end to end — crawls a site, groups template pages (blog, docs, tag archives, pagination) so only one representative sample per group is measured, runs Lighthouse over those samples, and publishes the results to a shared dashboard artifact that keeps measurement history. Use this skill whenever the user asks about a site's performance, page speed, Core Web Vitals, Lighthouse scores, LCP/CLS/TBT, why a site is slow, or wants a performance report or audit for any URL — even if they don't name Lighthouse or this skill explicitly. Also use it when they ask to re-measure, re-run, or update an existing performance report.
+description: Measures website performance end to end — crawls a site, groups template pages (blog, docs, tag archives, pagination) so only one representative sample per group is measured, runs Lighthouse over those samples through the PageSpeed Insights API, and publishes the results to a shared dashboard artifact that keeps measurement history. Use this skill whenever the user asks about a site's performance, page speed, Core Web Vitals, Lighthouse scores, LCP/CLS/TBT, why a site is slow, or wants a performance report or audit for any URL — even if they don't name Lighthouse or this skill explicitly. Also use it when they ask to re-measure, re-run, or update an existing performance report.
 ---
 
 # Site performance report
 
-Crawl a site, measure a representative sample of pages with Lighthouse, publish a dashboard.
+Crawl a site, measure a representative sample of pages with PageSpeed Insights (Google's hosted
+Lighthouse), publish a dashboard.
 
 Measuring every page of a large site is slow and pointless: a blog with 140 posts renders
 140 near-identical pages. This skill groups URLs by template and measures one page per group,
@@ -15,7 +16,8 @@ then says so plainly in the report so nobody mistakes a sample for full coverage
 
 A shared dashboard artifact with a mobile/desktop toggle showing, per template group: the
 Lighthouse performance score (0–100), LCP, FCP, TBT, CLS, Speed Index, TTI, and the top
-opportunities — plus CrUX field data when a key is available.
+opportunities — plus CrUX field data (real Chrome users, 28-day rolling) for the origin, which the
+PSI response includes whenever Google has enough traffic for the site.
 
 **The dashboard UI is in English.** Group names come from `scripts/group.js`, which labels them
 in English too; keep both consistent if you localise either. Every run is appended
@@ -30,15 +32,32 @@ be wrong, and a bad grouping silently produces a misleading report.
 There are two modes. **Interactive** (a person asked in chat) and **unattended** (a scheduled
 routine with nobody to ask). They differ only in step 3 and step 5 — see "Unattended runs" below.
 
-### 1. Set up (first run in a session only)
+### 1. Set up
 
-```bash
-npm install -g lighthouse --silent
-npx -y @puppeteer/browsers install chrome@stable --path "$HOME/.cache/puppeteer"
-```
+Nothing to install: Lighthouse runs on Google's machines, and the scripts only need Node 18+
+(for the built-in `fetch`).
 
-`scripts/audit.js` looks for Chrome under `~/.cache/puppeteer/chrome` and on the PATH, and exits
-with a clear message if it can't find one.
+`scripts/audit.js` needs a PageSpeed Insights API key in `PSI_API_KEY`. Without one, PSI shares a
+single public quota that is permanently exhausted and every call answers 429. The key is free
+(Google Cloud project → enable "PageSpeed Insights API" → create an API key, restricted to that
+API); the default quota is 25,000 calls a day, far more than this skill uses.
+
+- In a scheduled routine the key comes from the cloud environment — nothing to do. Either
+  `PSI_API_KEY` is an environment variable, or the key is stored as an API credential that the
+  agent proxy attaches to `www.googleapis.com` requests and `PSI_KEY_FROM_PROXY=1` is set instead
+  (see ROUTINE.md). `audit.js` sends the key in the `X-Goog-Api-Key` header, never in the URL.
+- In chat, **don't ask the user to paste the key**. If they already have, use it only as an
+  environment variable on the command (`PSI_API_KEY=... node scripts/audit.js ...`), never write it
+  into a file, the config, a run document or the repository, and suggest they restrict or rotate
+  it. `audit.js` redacts the key from every log line and from its output.
+
+If `audit.js` exits with code 2 the key is missing; with code 3 PSI rejected it or the daily quota
+ran out (in proxy mode, usually a credential that wasn't attached) — stop and report that rather
+than retrying.
+
+Measured while building this: 3 groups × 2 form factors × 3 runs (18 PSI calls) took about 40s
+at `--concurrency 10`. Single calls ranged from ~10s to ~80s, and PSI answers an occasional
+HTTP 500 "Something went wrong" on a healthy page; `audit.js` retries those twice.
 
 ### 2. Crawl
 
@@ -94,7 +113,8 @@ adjust, or drop groups. Common corrections:
 - two groups that are really one template → merge them
 
 Verify each chosen sample returns HTTP 200 without redirecting before measuring
-(`curl -s -o /dev/null -w "%{http_code} %{url_effective}" -L <url>`).
+(`curl -s -o /dev/null -w "%{http_code} %{url_effective}" -L <url>`). `audit.js` also preflights
+every URL, but a reviewed sample that's already dead makes a bad config.
 
 **Then save those decisions as the config**, so the next run reproduces them. Shape:
 
@@ -125,48 +145,54 @@ points on the same page — a site can look fine on desktop while failing on mob
 reporting only one number hides that.
 
 `--runs 3` (the default) measures each page three times and keeps the median, because a single
-Lighthouse run is noisy (see "Things worth telling the user"). It triples the time, which is why
-the work is split into many short commands. Background jobs don't survive between commands, so
-don't reach for `nohup`.
+run is noisy even on Google's hardware (see "Things worth telling the user").
 
-**Budget the commands.** One Lighthouse run takes 30–60s; slow pages take longer. Commands have
-a time limit — 300s in claude.ai chat; in Claude Code, the shell tool's timeout. The safe
-default is **one group per command on mobile, up to three per command on desktop**. Crowding a
-command doesn't just time out: packing three slow mobile groups into one 300s command made
-individual attempts fail, which surfaced as an implausible spread (a homepage "ranging" 17–58).
+**How the time works.** One PSI call takes 15–80s, but `audit.js` runs calls in parallel
+(`--concurrency 10` by default), so a group measured on both form factors with three runs each
+costs about one or two calls' worth of wall time. Measure both strategies **in the same command**
+(`--strategy both`, the default): the script then settles on one working URL per group and uses it
+for both, so there's no mobile-then-desktop hand-off to manage.
+
+**Budget the commands.** Commands have a time limit — 300s in claude.ai chat; in Claude Code the
+shell tool's timeout, which is 2 minutes unless a longer one (up to 10 minutes) is passed.
+`--deadline` (seconds, default 270) makes `audit.js` stop starting new calls before the limit and
+still write its output; groups it didn't get to are listed as skipped with "time budget", and
+groups that got fewer runs than asked log `only N/3 runs succeeded`. Keep `--deadline` about 30s
+under the command limit, and chunk the groups so a chunk comfortably fits:
+
+- claude.ai chat: `--size 3`, `--deadline 270`
+- Claude Code: pass a 600000 ms timeout to the shell tool, then `--size 5`, `--deadline 540`
 
 ```bash
-# 1. one file per group
-node scripts/split.js /tmp/groups-final.json --size 1 --prefix /tmp/g-
+# 1. chunks that fit one command each
+node scripts/split.js /tmp/groups-final.json --size 3 --prefix /tmp/g-
 
-# 2. mobile, one command per group
-node scripts/audit.js /tmp/g-0.json --strategy mobile --out /tmp/m-0.json
-node scripts/audit.js /tmp/g-1.json --strategy mobile --out /tmp/m-1.json
-# ... one per group
-
-# 3. desktop measures exactly the URLs mobile ended up on
-node scripts/resolve.js /tmp/groups-final.json /tmp/m-*.json --out /tmp/resolved.json
-node scripts/split.js /tmp/resolved.json --size 3 --prefix /tmp/d-
-node scripts/audit.js /tmp/d-0.json --strategy desktop --out /tmp/dout-0.json
+# 2. both form factors per chunk, one command per chunk
+PSI_API_KEY=... node scripts/audit.js /tmp/g-0.json --out /tmp/a-0.json
+PSI_API_KEY=... node scripts/audit.js /tmp/g-1.json --out /tmp/a-1.json
 # ... one per chunk
 
-# 4. one run document
-node scripts/merge.js /tmp/m-*.json /tmp/dout-*.json --out /tmp/run.json
+# 3. one run document
+node scripts/merge.js /tmp/a-*.json --out /tmp/run.json
 ```
 
-`resolve.js` exists because `audit.js` falls back to a candidate URL when a sample fails. Desktop
-has to measure the page mobile actually measured, or the dashboard's two numbers describe
-different pages.
+If a group was skipped for time, or came back incomplete (one form factor missing), or logged
+`only 2/3 runs succeeded` or a spread wider than ~10 points, rerun just that group — put it in its
+own groups file, measure it, and pass the rerun to `merge.js` **after** the original chunk; the
+later file wins, and `merge.js` drops a group from `skipped`/`incomplete` once a rerun covers it.
+If a command is killed by the shell before `--deadline`, its output file is never written — rerun
+that chunk with a lower `--deadline` or smaller `--size`.
 
-If a command times out, its output file is never written — rerun that group. Watch each log
-line: `only 2/3 runs succeeded`, or a spread much wider than ~10 points, means the measurement
-isn't trustworthy yet; rerun that group on its own before writing it to the dashboard.
+`--strategy mobile` / `desktop` still work for a single form factor. If you ever measure them in
+separate commands, run `scripts/resolve.js` between them so desktop measures the URL mobile ended
+up on.
 
 Two failures are handled automatically, and both are worth reporting because they say
 something real about the site:
 
-- **A dead URL** (sitemaps routinely list 404s). The script falls back to the group's other
-  candidates rather than losing the group.
+- **A dead URL** (sitemaps routinely list 404s). Each URL is preflighted with a plain GET first —
+  PSI reports a 404 page as a generic HTTP 500, indistinguishable from a transient failure — and
+  the script falls back to the group's other candidates rather than losing the group.
 - **A redirect to another path.** If a URL lands somewhere else — usually the homepage — the
   measurement is discarded. Without this check the report would silently show the homepage's
   numbers under another group's name. When every candidate in a group redirects, the group is
@@ -174,27 +200,19 @@ something real about the site:
 
 Always tell the user which groups were skipped and why.
 
-### 4b. Field data (optional, needs an API key)
+### 4b. Field data (automatic)
 
 Lighthouse answers "why is this slow". CrUX answers "is it slow for the people actually using
 it" — a 28-day rolling aggregate of real Chrome visits. They disagree often, and when they do
 the field data wins for prioritisation.
 
-```bash
-CRUX_API_KEY=... node scripts/crux.js /tmp/run.json
-```
+The PSI response carries the origin's CrUX data, so `audit.js` attaches it to the run as `crux`
+(per form factor) and the dashboard shows it — no extra key or step. A site with too little
+traffic gets `unavailable` instead, and the dashboard says so. When Google has enough data for an
+individual sampled URL, that page's own field numbers are stored on its strategy block as `field`.
 
-The key is free: enable the Chrome UX Report API in a Google Cloud project and create one
-(https://developer.chrome.com/docs/crux/api). Without the key the API returns 403 — skip this
-step and say so rather than guessing at field numbers.
-
-A site with too little traffic returns 404 for its origin; the script records that as
-unavailable and the dashboard says so. If the response parses to zero metrics, the script saves
-the raw body next to the output — read it before trusting anything, because the response shape
-has not been verified against a live key.
-
-Don't ask the user to paste their key into chat. Have them set it in the environment for the
-command, or run this step themselves.
+`scripts/crux.js` (separate Chrome UX Report API key in `CRUX_API_KEY`) is no longer part of the
+workflow; it would overwrite `crux` with the same origin data.
 
 ### 5. Publish
 
@@ -238,8 +256,10 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
   sections and retried missing ones. The flags travel through `audit.js` and `merge.js` into
   the run, and the dashboard labels them. Don't pick different samples yourself.
 - **Don't change the config.** Only an interactive session updates it.
-- **Measure one site at a time and finish it** (crawl → group → mobile → desktop → merge →
-  write) before starting the next, so a failure late in the run still leaves the earlier sites
+- **If `audit.js` exits with code 3** (key rejected or daily PSI quota used up), stop measuring
+  every remaining site — they would all fail the same way — and say so at the top of the summary.
+- **Measure one site at a time and finish it** (crawl → group → measure → merge → write)
+  before starting the next, so a failure late in the run still leaves the earlier sites
   updated.
 - **End with a summary**: per site, whether it was written, the median mobile and desktop score
   per group, any skipped groups with reasons, and any drift. That summary is the only place a
@@ -247,16 +267,19 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 
 ## Things worth telling the user
 
-- **Lighthouse is a lab measurement, and it is noisy.** The same page measured three times in
-  the same minute scored 58, 62, 62 during this skill's development — no change to the site.
-  The noise comes almost entirely through TBT (which is 30% of the score): CPU availability on
-  the measuring machine fluctuates, JavaScript takes longer to execute, TBT rises, the score
-  drops. LCP and CLS are far more stable.
+- **Lighthouse is a lab measurement, and it is noisy — on PSI too.** PSI takes the measuring
+  machine out of our hands, but Google's machines still vary: two PSI runs of the same blog post a
+  minute apart scored 75 and 89 while this was being built. Most of the noise still comes through
+  TBT (30% of the score); LCP and CLS are far more stable.
   That is why `--runs` defaults to 3 and the report stores the median plus the observed spread.
   Tell the user to read a change against that spread: if the score moved less than the spread,
   nothing happened. The dashboard already labels such changes "u okviru šuma".
   For a suspected regression, compare the raw metrics rather than the score — a real regression
   shows up as a moved LCP or a genuinely larger TBT, not as a 4-point score wobble.
+- **Scores measured before the switch to PSI aren't comparable with PSI scores.** Older runs
+  were local Lighthouse on whatever machine ran the skill. Runs now carry `engine: "psi"`; the
+  dashboard shows a "measuring method changed" note on the first PSI run and draws no deltas
+  across the switch. Treat the first PSI run as the new baseline.
 - **The dashboard is organization-internal.** A page that stores data can't be shared by public
   link, so colleagues need to be in the same organization and signed in.
 - **Only the dashboard's owner can add runs to it.** If a colleague runs this skill, they'll get
@@ -268,9 +291,11 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 - `scripts/group.js` — template clustering → `{site, totalUrls, groupCount, groups[]}`
 - `scripts/apply-config.js` — applies a saved config to fresh groups; flags new sections as
   provisional and retries vanished ones on the previous run's URL
-- `scripts/audit.js` — Lighthouse over samples, one or both form factors
+- `scripts/audit.js` — PageSpeed Insights over samples, both form factors, parallel; attaches
+  CrUX origin data (needs `PSI_API_KEY`)
 - `scripts/split.js` — splits a groups file into chunks that fit a command's time limit
-- `scripts/resolve.js` — hands desktop the exact URLs mobile measured
-- `scripts/merge.js` — combines per-strategy runs into the run document the dashboard reads
-- `scripts/crux.js` — attaches CrUX field data to a run (needs `CRUX_API_KEY`)
+- `scripts/resolve.js` — hands desktop the exact URLs mobile measured (only needed when the two
+  form factors are measured in separate commands)
+- `scripts/merge.js` — combines chunks and reruns into the run document the dashboard reads
+- `scripts/crux.js` — legacy: CrUX via its own API (`CRUX_API_KEY`); PSI already supplies this
 - `assets/dashboard.html` — the dashboard page, published once per site
