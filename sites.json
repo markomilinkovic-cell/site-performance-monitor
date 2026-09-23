@@ -1,0 +1,24 @@
+{
+  "sites": [
+    {
+      "site": "trafft.com",
+      "origin": "https://trafft.com",
+      "dashboard": "https://claude.ai/artifact/Kjs1P2ewU7wjqFudqxtH1J"
+    },
+    {
+      "site": "wpdatatables.com",
+      "origin": "https://wpdatatables.com",
+      "dashboard": "https://claude.ai/artifact/GaB4mwrP93nQ7RfaTSK589"
+    },
+    {
+      "site": "ivyforms.com",
+      "origin": "https://ivyforms.com",
+      "dashboard": "https://claude.ai/artifact/1bLACGrNYjYrb3DVX3hp7e"
+    },
+    {
+      "site": "wpamelia.com",
+      "origin": "https://wpamelia.com",
+      "dashboard": "https://claude.ai/artifact/CoB39X6Dp923m2Foqks5Pu"
+    }
+  ]
+}
