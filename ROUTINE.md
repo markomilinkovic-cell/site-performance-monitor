@@ -108,6 +108,9 @@ Finish with a summary: for each site, whether the run was written and with how m
 median and typical range for mobile and desktop per group, any skipped groups with the reason,
 and any site structure drift reported by apply-config.js: which sections are new (measured with
 an unreviewed sample) and which vanished (and whether their previous page still worked).
+If crawl.js or apply-config.js reports that a sitemap file failed to load (SITEMAP FETCH FAILED),
+put that at the top of that site's summary with the sitemap URL and its HTTP status: every page
+listed only in that sitemap is missing from the report.
 ```
 
 ## 4. Before relying on it: what hasn't been verified
