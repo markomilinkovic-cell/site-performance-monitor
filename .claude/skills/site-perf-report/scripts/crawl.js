@@ -23,9 +23,13 @@ if (!start) {
 const origin = new URL(start).origin;
 const host = new URL(start).host;
 
-function fetch(url, redirects = 0) {
+// Resolves {body, status}. status is null only on a network-level failure
+// (timeout, DNS, connection reset) — a real HTTP response always has a
+// status, including a 4xx/5xx, so callers can tell "not found" from "server
+// broke" instead of seeing both as an empty result.
+function fetchStatus(url, redirects = 0) {
   return new Promise(resolve => {
-    if (redirects > 5) return resolve(null);
+    if (redirects > 5) return resolve({ body: null, status: null });
     const lib = url.startsWith("https") ? https : http;
     const req = lib.get(
       url,
@@ -34,19 +38,20 @@ function fetch(url, redirects = 0) {
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
           res.resume();
           const next = new URL(res.headers.location, url).href;
-          return resolve(fetch(next, redirects + 1));
+          return resolve(fetchStatus(next, redirects + 1));
         }
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        if (res.statusCode !== 200) { res.resume(); return resolve({ body: null, status: res.statusCode }); }
         let body = "";
         res.setEncoding("utf8");
         res.on("data", c => { body += c; if (body.length > 12e6) req.destroy(); });
-        res.on("end", () => resolve(body));
+        res.on("end", () => resolve({ body, status: 200 }));
       }
     );
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve({ body: null, status: null }); });
+    req.on("error", () => resolve({ body: null, status: null }));
   });
 }
+async function fetch(url, redirects = 0) { return (await fetchStatus(url, redirects)).body; }
 
 function tags(xml, tag) {
   const re = new RegExp("<" + tag + "[^>]*>([\\s\\S]*?)</" + tag + ">", "gi");
@@ -72,7 +77,12 @@ function clean(raw) {
 
 async function fromSitemaps() {
   const seen = new Set();
-  const queue = [origin + "/sitemap.xml", origin + "/sitemap_index.xml", origin + "/wp-sitemap.xml"];
+  // The three guesses are allowed to 404 quietly — most sites only have one
+  // of them. Anything reached from an index or robots.txt is a sitemap the
+  // site itself says exists, so a failure there is worth reporting: it means
+  // every URL that sitemap would have listed is invisible to this crawl.
+  const guesses = new Set([origin + "/sitemap.xml", origin + "/sitemap_index.xml", origin + "/wp-sitemap.xml"]);
+  const queue = [...guesses];
   const robots = await fetch(origin + "/robots.txt");
   if (robots) {
     for (const line of robots.split("\n")) {
@@ -82,12 +92,16 @@ async function fromSitemaps() {
   }
   const urls = new Set();
   const visited = new Set();
+  const failed = [];
   while (queue.length && urls.size < MAX) {
     const sm = queue.shift();
     if (visited.has(sm)) continue;
     visited.add(sm);
-    const xml = await fetch(sm);
-    if (!xml || !/<(urlset|sitemapindex)/i.test(xml)) continue;
+    const { body: xml, status } = await fetchStatus(sm);
+    if (!xml || !/<(urlset|sitemapindex)/i.test(xml)) {
+      if (!guesses.has(sm)) failed.push({ url: sm, status: status === null ? "network error" : "HTTP " + status });
+      continue;
+    }
     const isIndex = /<sitemapindex/i.test(xml);
     for (const block of tags(xml, isIndex ? "sitemap" : "url")) {
       const loc = tags(block, "loc")[0];
@@ -98,7 +112,7 @@ async function fromSitemaps() {
       if (urls.size >= MAX) break;
     }
   }
-  return [...urls];
+  return { urls: [...urls], failed };
 }
 
 async function fromLinks() {
@@ -123,15 +137,21 @@ async function fromLinks() {
 }
 
 (async () => {
-  let urls = await fromSitemaps();
+  let { urls, failed } = await fromSitemaps();
   let source = "sitemap";
   if (urls.length < 2) {
     urls = await fromLinks();
     source = "links";
+    failed = [];   // a broken sitemap doesn't matter once link-crawling is the source
   }
   urls.sort();
-  const result = { site: host, origin, source, count: urls.length, urls };
+  const result = { site: host, origin, source, count: urls.length, urls, failedSitemaps: failed };
   const json = JSON.stringify(result, null, 2);
+  if (failed.length) {
+    console.error(`crawl: WARNING — ${failed.length} sitemap file(s) failed and were skipped, ` +
+      "so any URLs only listed there are missing from this crawl:");
+    for (const f of failed) console.error(`  ${f.url} (${f.status})`);
+  }
   if (OUT) {
     require("fs").writeFileSync(OUT, json);
     console.error(`crawl: ${urls.length} urls via ${source} -> ${OUT}`);

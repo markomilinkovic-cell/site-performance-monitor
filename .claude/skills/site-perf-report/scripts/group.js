@@ -111,7 +111,9 @@ const result = {
   origin: data.origin,
   totalUrls: urls.length,
   groupCount: groups.length,
-  groups
+  groups,
+  // Carried through from crawl.js so apply-config.js can fold it into drift.
+  failedSitemaps: data.failedSitemaps || []
 };
 
 const json = JSON.stringify(result, null, 2);

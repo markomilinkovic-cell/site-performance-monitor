@@ -111,9 +111,14 @@ const drift = {
   // Missing sections we could still try, using the previous run's URL.
   retriedFromPreviousRun: recovered,
   // Excluded patterns that no longer appear at all: the exclusion is stale.
-  staleExcludes: [...exclude].filter(p => !crawledPatterns.includes(p))
+  staleExcludes: [...exclude].filter(p => !crawledPatterns.includes(p)),
+  // A sub-sitemap that failed (see crawl.js): every URL it would have listed
+  // is invisible to this run, and — unlike newPatterns/missingPatterns —
+  // that's true even the very first time a section is measured, so this
+  // can't be caught by comparing against "expected" at all.
+  failedSitemaps: data.failedSitemaps || []
 };
-const hasDrift = drift.newPatterns.length || drift.missingPatterns.length;
+const hasDrift = drift.newPatterns.length || drift.missingPatterns.length || drift.failedSitemaps.length;
 
 const result = Object.assign({}, data, {
   groups,
@@ -121,8 +126,13 @@ const result = Object.assign({}, data, {
   configApplied: true,
   drift: hasDrift ? drift : null
 });
+delete result.failedSitemaps;   // folded into drift above; don't carry it twice
 
-if (hasDrift) {
+if (drift.failedSitemaps.length) {
+  console.error("apply-config: SITEMAP FETCH FAILED — some site content may be entirely missing from this run:");
+  for (const f of drift.failedSitemaps) console.error(`  ${f.url} (${f.status})`);
+}
+if (hasDrift && (drift.newPatterns.length || drift.missingPatterns.length)) {
   console.error("apply-config: SITE STRUCTURE CHANGED since the config was saved");
   if (drift.newPatterns.length)
     console.error("  new sections, measured with an unreviewed sample: " + drift.newPatterns.join(", "));
