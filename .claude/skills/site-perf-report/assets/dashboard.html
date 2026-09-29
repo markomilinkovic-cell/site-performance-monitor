@@ -65,8 +65,11 @@ main .wrap{padding-top:32px;padding-bottom:48px}
 .pfield b{color:var(--ink);font-weight:600}
 .hcell.other{opacity:.45;border-style:dashed}
 .hcell i{display:block;font-style:normal;font-size:10px;color:var(--ink-3);font-weight:600;letter-spacing:.03em}
-.drift{border:1px solid var(--mid);background:var(--mid-zone);border-radius:4px;padding:12px 16px;margin-bottom:24px;font-size:13.5px}
+.drift{border:1px solid var(--mid);background:var(--mid-zone);border-radius:4px;padding:12px 16px;margin-bottom:12px;font-size:13.5px}
 .drift b{display:block;margin-bottom:4px}
+.drift.tracked{border-color:var(--mid);background:var(--mid-zone)}
+.drift.open{border-color:var(--bad);background:var(--bad-zone)}
+.drift a{font-weight:600;color:var(--accent)}
 .field{border:1px solid var(--rule);border-radius:4px;background:var(--surface);padding:16px 18px;margin-bottom:24px}
 .field h2{margin:0 0 4px;font-size:13px;font-weight:600;color:var(--ink-3);letter-spacing:.02em}
 .field .sub{font-size:12.5px;color:var(--ink-3);margin:0 0 14px}
@@ -258,6 +261,33 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     return '<span class="delta" style="color:'+(d>0?"var(--good)":"var(--bad)")+'">'+(d>0?"+":"")+d+'</span>';
   }
 
+  var BOARD="https://tmsplugins.atlassian.net/jira/software/projects/WEB/boards/30";
+  function issueOf(run,kind,subject,strategy){
+    var list=(run&&run.issues)||[];
+    for(var i=0;i<list.length;i++){
+      var x=list[i];
+      if(x.kind!==kind||x.subject!==subject)continue;
+      if(strategy!=null&&x.strategy!==strategy)continue;
+      return x;
+    }
+    return null;
+  }
+  function jiraLine(run,issue){
+    if(!run||!run.issuesChecked)return"";
+    if(issue&&issue.key){
+      var href=issue.browseUrl||("https://tmsplugins.atlassian.net/browse/"+issue.key);
+      return '<div>Tracked in Jira: <a href="'+esc(href)+'" target="_blank" rel="noopener noreferrer">'+esc(issue.key)+'</a></div>';
+    }
+    var hint=issue&&issue.suggest?' Suggested title: <i>'+esc(issue.suggest)+'</i>.':'';
+    return '<div>No Jira task in WEB — create one on the <a href="'+BOARD+'" target="_blank" rel="noopener noreferrer">WEB board</a>.'+hint+'</div>';
+  }
+  function problemBox(run,kind,subject,strategy,title,body){
+    var issue=issueOf(run,kind,subject,strategy);
+    var tracked=!!(run.issuesChecked&&issue&&issue.key);
+    var cls="drift"+(run.issuesChecked?(tracked?" tracked":" open"):"");
+    var style=run.issuesChecked?"":' style="border-color:var(--bad)"';
+    return '<div class="'+cls+'"'+style+'><b>'+esc(title)+'</b>'+body+jiraLine(run,issue)+'</div>';
+  }
   function pageHTML(p,prevBlock){
     var d=view(p);
     if(!d)return"";
@@ -362,15 +392,19 @@ main .wrap{padding-top:32px;padding-bottom:48px}
       }).join("")+(more>xs.length?'<li>… and '+(more-xs.length)+' more</li>':'')+'</ul>';
     };
     var out="";
-    var fs=h.failedSitemaps||[];
-    if(fs.length){
-      out+='<div class="drift" style="border-color:var(--bad)"><b>Sitemap fetch failed</b>'+
-        list(fs.map(function(f){return{url:f.url,status:f.status}}),fs.length)+
-        'The pages listed only in '+(fs.length===1?'that sitemap':'those sitemaps')+' were not health-checked.</div>';
-    }
-    if(h.serverErrorCount){
-      out+='<div class="drift" style="border-color:var(--bad)"><b>'+h.serverErrorCount+' page'+(h.serverErrorCount===1?'':'s')+
-        ' answered with a server error (5xx) twice in a row</b>'+list(h.serverErrors,h.serverErrorCount)+'</div>';
+    (h.failedSitemaps||[]).forEach(function(f){
+      out+=problemBox(run,"sitemap",f.url,null,"Sitemap fetch failed",
+        '<div><code>'+esc(String(f.status))+'</code> '+esc(f.url)+'</div>'+
+        '<div>Pages listed only in this sitemap were not health-checked.</div>');
+    });
+    (h.serverErrors||[]).forEach(function(x){
+      out+=problemBox(run,"server-error",x.url,null,"Server error",
+        '<div><code>'+esc(String(x.status))+'</code> '+esc(x.url)+(x.tracked?' <i>(tracked page)</i>':'')+'</div>'+
+        '<div>Answered 5xx twice in a row.</div>');
+    });
+    if(h.serverErrorCount>(h.serverErrors||[]).length){
+      out+='<p class="sub" style="margin:0 0 12px;font-size:13px">… and '+
+        (h.serverErrorCount-h.serverErrors.length)+' more server errors not listed.</p>';
     }
     var tail=[];
     if(h.notFoundCount)tail.push(h.notFoundCount+" listed in the sitemap but not found (404/410)");

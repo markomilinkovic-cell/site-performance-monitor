@@ -7,8 +7,10 @@ written to one dashboard per site.
   per page. Edit the sheet to start or stop tracking a page; the next run picks it up. Author,
   category and tag archives are never measured.
 - **Every sitemap URL is health-checked** on each run; pages answering 5xx and sitemap files that
-  fail to load are reported at the top of the dashboard and of the routine's summary. Crawled pages
-  are not measured.
+  fail to load are reported at the top of the dashboard and of the routine's summary, and checked
+  against open issues in the Jira project WEB: a match is shown in yellow, and no match in red
+  with a prompt to create a task. The routine searches Jira; it does not create the task. A score
+  drop is reported as a notification and is not a task. Crawled pages are not measured.
 - `sites.json` — the sheet id, each site's tab name, exclusions and dashboard links
 - `.claude/skills/site-perf-report/` — the skill that does the measuring
 - `ROUTINE.md` — how to set up the weekly routines (one per site), and what to check on the first run

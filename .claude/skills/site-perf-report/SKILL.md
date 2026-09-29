@@ -28,7 +28,10 @@ A shared dashboard artifact with a mobile/desktop toggle showing, per tracked pa
 Lighthouse performance score (0–100), LCP, FCP, TBT, CLS, Speed Index, TTI, and the top
 opportunities — plus CrUX field data (real Chrome users, 28-day rolling) for the origin, which the
 PSI response includes whenever Google has enough traffic for the site, and the health-check
-result (server errors, pages not found, failed sitemaps).
+result (server errors, pages not found, failed sitemaps). A 5xx or a failed sitemap that already
+has an open WEB issue is yellow and links to it; one with no issue is red and says to create a
+task on the [WEB board](https://tmsplugins.atlassian.net/jira/software/projects/WEB/boards/30).
+A score drop is reported on the page and in the summary, and is not a Jira task.
 
 **The dashboard UI is in English.** Entry names are the sheet's Page Type, or Page Type plus the
 last path segment when a type appears more than once (`Blog Post · nps-survey-questions`). History
@@ -194,6 +197,40 @@ individual measured URL, that page's own field numbers are stored on its strateg
 `scripts/crux.js` (separate Chrome UX Report API key in `CRUX_API_KEY`) is no longer part of the
 workflow; it would overwrite `crux` with the same origin data.
 
+### 4c. Serious problems and Jira
+
+Do this once, immediately before the last `write_db` of a run (after the final merge, or the
+early write when `audit.js` exits 3). Also do the search when nothing was measured but the
+health check ran — then there is no run to stamp, and the result goes only in the summary.
+Skip it on the provisional writes after rounds 1 and 3.
+
+```bash
+node scripts/issues.js --health /tmp/health.json --run /tmp/run.json --out /tmp/issues.json
+```
+
+Omit `--run` when there is no measurement. The script only lists 5xx URLs and failed sitemaps,
+each with a JQL query. A score drop is not included. It does not call Jira.
+
+With the Jira connector, search project **WEB**
+([board](https://tmsplugins.atlassian.net/jira/software/projects/WEB/boards/30)) using each
+problem's `jql`. Take the first unresolved issue. Set that problem's `key` (for example
+`WEB-123`) and `browseUrl` (`https://tmsplugins.atlassian.net/browse/WEB-123`). Then set the
+file's `checked` to `true`.
+
+```bash
+node scripts/issues.js --stamp /tmp/run.json --issues /tmp/issues.json
+```
+
+`--stamp` refuses to write unless `checked` is true (exit 2). If the connector is missing or a
+search fails, leave `checked` false, do not stamp, and say Jira was not checked. Do not claim
+there is no task. **Do not create or edit Jira issues.** When there is no task, the dashboard
+and the summary say to create one, with the suggested title from `suggest`.
+
+A ticket is found only if its text contains the URL (host + path) and a word for the kind
+(`5xx` / `server error`, or `sitemap`). A new task should use the `suggest` string as its
+summary so the next run finds it. Score drops are called out in the summary; do not search
+Jira for them and do not suggest a task.
+
 ### 5. Publish
 
 This skill maintains **one** dashboard per site and appends runs to it.
@@ -214,14 +251,17 @@ The dashboards' `config/groups` documents from the earlier grouping workflow are
 leave them alone.
 
 Run documents must contain `site`, `strategies`, `generated`, `generatedAt`, and `groups`;
-`merge.js` emits exactly this, so pass its output unchanged.
+`merge.js` emits exactly this. Pass its output unchanged except for the Jira stamp from step 4c,
+and only on the last write of the run.
 
 ### 6. Report back
 
 Give the user the artifact link plus a two or three sentence read of the results in chat: which
 page is worst, which metric is dragging the score down, and the single biggest opportunity.
 Lead with any server error from the health check and any sheet rows `pages.js` skipped.
-Don't recite every number — the dashboard shows those.
+For every 5xx and failed sitemap, name the open WEB issue or say that none exists and one
+should be created. A score drop is part of the read, without a task. Don't recite every number
+— the dashboard shows those.
 
 ## Unattended runs (scheduled routine)
 
@@ -239,12 +279,18 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 - **If `audit.js` exits with code 3** (key rejected or daily PSI quota used up), stop measuring
   every remaining site — they would all fail the same way — and say so at the top of the summary.
 - **Prepare first** (sheet → crawl → health check → split), then **measure in five rounds**:
-  round k runs burst k of every chunk (of every site, if there are several). After rounds 1, 3
-  and 5, merge with `--health` and write the run (same doc id each time). A session that stops
-  midway still leaves the dashboard with the bursts measured so far.
+  round k runs burst k of every chunk (of every site, if there are several). After rounds 1 and
+  3, merge with `--health` and write the run. After round 5, merge, run the Jira check, then
+  write (same doc id each time, so the last write replaces the earlier ones). A session that
+  stops midway still leaves the dashboard with the bursts measured so far.
+- **Before the last write**, run the Jira check in "Serious problems and Jira". Do not create
+  or edit issues. Provisional writes after rounds 1 and 3 stay unstamped.
 - **End with a summary**: health-check server errors and failed sitemaps first, then sheet rows
   that were skipped and why, then whether the run was written and with how many bursts, the
-  median and typical range for mobile and desktop per page, and any skipped pages with reasons.
+  median and typical range for mobile and desktop per page, any real score drops (notification
+  only — no Jira task), and any skipped pages with reasons.
+  Then every 5xx and failed sitemap with its WEB issue key, or a note that no task exists and
+  one should be created on the WEB board. If Jira was not searched, say that instead.
   That summary is the only place a human will see problems.
 
 ## Things worth telling the user
@@ -288,6 +334,8 @@ A routine runs this skill with nobody watching and nobody to answer questions. R
 - `scripts/split.js` — splits a pages file into chunks that fit a command's time limit
 - `scripts/merge.js` — pools chunks, bursts and reruns into the run document the dashboard reads;
   `--health` attaches the health check
+- `scripts/issues.js` — lists 5xx URLs and failed sitemaps, and stamps Jira keys onto the run
+  after the connector has searched project WEB. Score drops are not included.
 - `scripts/stats.js` — median, typical range and sample pooling, shared by audit.js and merge.js
 - `scripts/crux.js` — legacy: CrUX via its own API (`CRUX_API_KEY`); PSI already supplies this
 - `assets/dashboard.html` — the dashboard page, published once per site

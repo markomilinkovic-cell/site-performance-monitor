@@ -101,38 +101,62 @@ starts failing) and keeps each session to 1–2 hours.
 
 - **Repository:** the one from step 1
 - **Environment:** the one from step 2
-- **Connectors:** remove all of them. This routine only needs the built-in artifact tool.
-  Anything left in can be used without asking during the run. (The sheet is read over plain
-  HTTPS, not through the Google Drive connector.)
-- **Prompt:** paste the block below, replacing `SITE` with the site from the table.
+- **Connectors:** the built-in artifact tool, the Slack connector, and the Jira connector.
+  Remove every other connector. Anything left in can be used without asking during the run, so
+  the prompt tells the session to search Jira and to post to one Slack channel, and not to
+  create Jira issues or message any other channel. The sheet is read over plain HTTPS, not
+  through the Google Drive connector. Jira and Slack are reached through their connectors, not
+  through the network allowlist.
+- **Prompt:** paste the block below. Replace `SITE`, `ORIGIN` and `DASHBOARD` from `sites.json`
+  (for trafft.com: `https://trafft.com` and `https://claude.ai/artifact/Kjs1P2ewU7wjqFudqxtH1J`).
 
 ```text
 Run the weekly performance update for SITE, using the site-perf-report skill in
 .claude/skills/site-perf-report/ and its entry in sites.json.
 
 This is an unattended run. Nobody is available to answer questions, so follow the skill's
-"Unattended runs" section strictly:
+"Unattended runs" section strictly. Run every command from the repository root; S below means
+.claude/skills/site-perf-report/scripts.
 
-- Run every command from the repository root. Prepare first:
-  1. node .claude/skills/site-perf-report/scripts/pages.js --site SITE --sites sites.json --out /tmp/pages.json
+- Prepare first:
+  1. node S/pages.js --site SITE --sites sites.json --out /tmp/pages.json
      This reads the pages to measure from the Page Speed Tracker sheet. It is the only page list;
-     don't add, drop or substitute pages. If it exits 4 (sheet unreadable) or 5 (no pages), do
-     not measure; still do steps 2-3, write nothing to the dashboard, and put the error at the top
-     of the summary.
-  2. node .claude/skills/site-perf-report/scripts/crawl.js <origin from sites.json> --out /tmp/urls.json
-  3. node .claude/skills/site-perf-report/scripts/health.js /tmp/urls.json --pages /tmp/pages.json --deadline 540
-     --out /tmp/health.json (600000 ms shell timeout). The crawl is used only for this check.
-  4. node .claude/skills/site-perf-report/scripts/split.js /tmp/pages.json --size 5 --prefix /tmp/g-
-- Then measure in five rounds. Round k runs audit.js --runs 5 --burst k --deadline 540 on every
-  chunk in turn (mobile and desktop together, the default), with a 600000 ms shell timeout per
-  command. Every round uses the same chunk files.
-- After rounds 1, 3 and 5, merge every burst file so far with
-  merge.js ... --health /tmp/health.json, and write the result to the dashboard listed in
-  sites.json with write_db, collection "runs", doc_id set to the merged run's generatedAt to the
-  second, colons replaced by dashes (for example 2026-09-28T06-00-12Z). generatedAt stays the same
-  across the three merges, so each write replaces the previous one.
-- If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop measuring, write what
-  has been measured so far, and put that at the top of the summary.
+     don't add, drop or substitute pages. If it exits 4 (sheet unreadable) or 5 (no pages), do not
+     measure; still do steps 2-3, write nothing to the dashboard, and put the error at the top of
+     the summary and of the Slack message.
+  2. node S/crawl.js ORIGIN --out /tmp/urls.json
+  3. node S/health.js /tmp/urls.json --pages /tmp/pages.json --deadline 540 --out /tmp/health.json
+     (600000 ms shell timeout). The crawl is used only for this check.
+  4. node S/split.js /tmp/pages.json --size 5 --prefix /tmp/g-
+- Before measuring, read the dashboard's latest run (read_db, collection "runs", query ordered by
+  generatedAt descending, limit 1) and save it as /tmp/previous-run.json. It is used only for the
+  comparison in the Slack message. If there is none, there is nothing to compare.
+- Then measure in five rounds. Round k runs node S/audit.js --runs 5 --burst k --deadline 540 on
+  every chunk in turn (mobile and desktop together, the default), with a 600000 ms shell timeout
+  per command. Every round uses the same chunk files.
+- After rounds 1 and 3, merge every burst file so far with
+  node S/merge.js ... --health /tmp/health.json --out /tmp/run.json, and write /tmp/run.json to
+  the SITE dashboard listed in sites.json (DASHBOARD) with write_db, collection "runs", doc_id
+  set to the merged run's generatedAt to the second, colons replaced by dashes (for example
+  2026-10-05T07-00-12Z). Do not run the Jira check on these provisional writes.
+- After round 5, merge the same way, then run the Jira check below, then write the stamped
+  /tmp/run.json with the same doc_id. generatedAt stays the same across the three merges, so
+  each write replaces the previous one.
+- If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop measuring, run the
+  Jira check, write what has been measured so far, and put that at the top of the summary.
+- Jira check, once, before that last write (and also when you did not measure but the health
+  check ran). Follow "Serious problems and Jira" in the skill:
+  1. node S/issues.js --health /tmp/health.json --run /tmp/run.json --out /tmp/issues.json
+     Omit --run when there is no measurement. This lists only a URL that answered 5xx twice and
+     a sitemap that failed to load. A score drop is not a task; report it in the summary and the
+     Slack message only. The script does not call Jira.
+  2. For each problem, search project WEB with the Jira connector using that problem's jql
+     (unresolved issues only). Do not create or edit issues. If one comes back, set key and
+     browseUrl on that object. When every search has been done, set "checked" to true in
+     /tmp/issues.json. If the connector is unavailable or a search fails, leave checked false
+     and say Jira was not checked; do not claim there is no task.
+  3. When a run file exists and checked is true: node S/issues.js --stamp /tmp/run.json --issues /tmp/issues.json
+     then write_db that file. If stamp exits 2, write the unstamped run.
 - A page skipped for "time budget" or incomplete in one burst just has fewer runs. Only if a page
   ends with fewer than 15 runs on a form factor, measure it once more with --burst 6 and merge
   again. A wide spread alone is normal for PSI and is not a reason to rerun.
@@ -147,6 +171,36 @@ Finish with a summary, in this order:
 3. Measurement: whether the run was written and with how many bursts, the median and typical
    range for mobile and desktop per page, and any skipped pages with the reason (a 404 or
    redirect means the sheet row points at an old URL).
+4. Jira: every 5xx URL and failed sitemap from issues.js. If an open WEB issue was found, its key
+   and link. If none was found, say that no Jira task exists and that one should be created on
+   https://tmsplugins.atlassian.net/jira/software/projects/WEB/boards/30, and include the
+   suggested title. Do not create it. If Jira could not be searched, say that instead of claiming
+   there is no task. If there were no such problems, say so. Score drops are not listed here.
+
+Finally, after the last write to the dashboard (or after deciding not to measure), send one
+message to the Slack channel C0C4A4B5SA1 (#melograno-website-performance) using the Slack
+connector. Send it only to that channel; if sending fails, note it in the run summary, do not
+fail the run because of it, and do not try other channels. Content, using Slack formatting
+(*bold*, bullet points with •) and no tables:
+- First line: *SITE* and a one-line overall status (measured / partially measured with
+  N of 5 bursts / not measured, and why).
+- The dashboard link: DASHBOARD
+- Health check: if any URL answered 5xx or a sitemap failed to load, list those URLs first, marked
+  clearly as a problem. Otherwise one line saying no server errors, with the number of URLs checked.
+- Scores: the median across all measured pages of each page's median score, for mobile and for
+  desktop, and the three lowest-scoring pages on mobile with their scores.
+- Change from the previous run: compare only pages with the same name that exist in both
+  /tmp/previous-run.json and this run, and only if both runs have source "psi". Call a change a
+  drop or an improvement only when the two runs' typical ranges for that page don't overlap;
+  otherwise it is within noise. List every page that dropped, clearly highlighted, with old and new
+  median. If no pages match (for example the first run after switching to the sheet), say
+  "first run with the sheet page list, no comparison".
+- Jira, one bullet per 5xx URL and failed sitemap: the issue key and link when an open WEB task
+  exists, or *No Jira task* plus the suggested title and the WEB board link when it does not.
+  Do not create the task. If none of those problems were found, one line saying so. A score drop
+  stays in the change list above and does not get a task.
+- Sheet rows that were skipped, and pages that were skipped during measurement, each with the
+  reason.
 ```
 
 ## 4. Before relying on it: what hasn't been verified
@@ -186,6 +240,7 @@ Check that:
 - `audit.js` measured without `STOPPED EARLY` (the key worked)
 - the run ended with a successful database write, not a question
 - the dashboard shows a new run with the sheet's pages and a "Health check" line at the top
+- each 5xx URL and failed sitemap in the summary names a WEB issue, or says none exists and a task should be created. A score drop is only mentioned, with no task
 
 Run one routine first (ivyforms.com is the quickest to check), then enable the other three.
 
@@ -210,4 +265,6 @@ the history row, and only compares runs of the same source. Treat the first PSI 
 baseline and compare forward from there.
 
 `assets/dashboard.html` in this repository is the page currently published on the four
-dashboards; the routine never republishes it.
+dashboards; the routine never republishes it. The yellow and red Jira lines are drawn by that
+page from `issues` on the run. After this change, republish each site's dashboard once from
+chat, or the colors stay on the old page even when the run data has the issue keys.
