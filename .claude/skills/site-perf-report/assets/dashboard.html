@@ -350,6 +350,44 @@ main .wrap{padding-top:32px;padding-bottom:48px}
       esc(parts.join(" · "))+'. Every other section was measured on the same pages as before and compares normally.</div>';
   }
 
+  // Status check of every crawled URL (health.js). Server errors first: a page
+  // answering 5xx is broken for every visitor, measured or not.
+  function healthHTML(run){
+    var h=run.health;
+    if(!h)return"";
+    var list=function(xs,more){
+      if(!xs||!xs.length)return"";
+      return '<ul style="margin:6px 0 0;padding-left:18px">'+xs.map(function(x){
+        return '<li><code>'+esc(String(x.status))+'</code> '+esc(x.url)+(x.tracked?' <i>(tracked page)</i>':'')+'</li>';
+      }).join("")+(more>xs.length?'<li>… and '+(more-xs.length)+' more</li>':'')+'</ul>';
+    };
+    var out="";
+    var fs=h.failedSitemaps||[];
+    if(fs.length){
+      out+='<div class="drift" style="border-color:var(--bad)"><b>Sitemap fetch failed</b>'+
+        list(fs.map(function(f){return{url:f.url,status:f.status}}),fs.length)+
+        'The pages listed only in '+(fs.length===1?'that sitemap':'those sitemaps')+' were not health-checked.</div>';
+    }
+    if(h.serverErrorCount){
+      out+='<div class="drift" style="border-color:var(--bad)"><b>'+h.serverErrorCount+' page'+(h.serverErrorCount===1?'':'s')+
+        ' answered with a server error (5xx) twice in a row</b>'+list(h.serverErrors,h.serverErrorCount)+'</div>';
+    }
+    var tail=[];
+    if(h.notFoundCount)tail.push(h.notFoundCount+" listed in the sitemap but not found (404/410)");
+    if(h.networkErrorCount)tail.push(h.networkErrorCount+" timed out or failed to connect");
+    if(h.blockedCount)tail.push(h.blockedCount+" refused the checker (403/429, usually bot protection)");
+    if(h.notChecked)tail.push(h.notChecked+" not checked (time limit)");
+    var line='Health check: '+h.checked+' URLs requested'+(h.serverErrorCount?'':', no server errors')+
+      (tail.length?' · '+tail.join(' · '):'')+'.';
+    if(h.notFoundCount||h.networkErrorCount){
+      out+='<details class="sub" style="margin:0 0 24px;font-size:13px"><summary>'+esc(line)+'</summary>'+
+        list(h.notFound,h.notFoundCount)+list(h.networkErrors,h.networkErrorCount)+'</details>';
+    } else {
+      out+='<p class="sub" style="margin:0 0 24px;font-size:13px;color:var(--ink-3)">'+esc(line)+'</p>';
+    }
+    return out;
+  }
+
   function historyHTML(){
     if(runs.length<2)return"";
     var h='<div class="history"><h2>Measurement history</h2><div class="hrow">';
@@ -386,7 +424,7 @@ main .wrap{padding-top:32px;padding-bottom:48px}
     if(run.generated)meta.push(run.generated);
     meta.push("Lab: "+(SOURCE_LABEL[sourceOf(run)]||sourceOf(run)));
     if(run.skipped&&run.skipped.length)
-      meta.push(run.skipped.length+" group(s) skipped: "+run.skipped.map(function(x){return x.name}).join(", "));
+      meta.push(run.skipped.length+" skipped: "+run.skipped.map(function(x){return x.name}).join(", "));
     $("runMeta").innerHTML=meta.map(function(m){return"<span>"+esc(m)+"</span>"}).join("");
 
     var groups=run.groups||[],total=0,measured=0,pins="";
@@ -397,19 +435,21 @@ main .wrap{padding-top:32px;padding-bottom:48px}
       if(gs!==null)pins+='<div class="pin" data-label="'+esc(g.name)+'" style="left:'+gs+'%;background:'+scoreColor(gs)+'"></div>';
     });
     $("pins").innerHTML=pins;
-    $("spreadCount").textContent=groups.length+" groups · "+total+" pages · "+measured+" measured";
+    $("spreadCount").textContent=total===groups.length
+      ?groups.length+" pages measured"
+      :groups.length+" groups · "+total+" pages · "+measured+" measured";
     $("spread").hidden=groups.length===0;
 
-    var out=driftHTML(run)+fieldHTML(run)+historyHTML();
+    var out=healthHTML(run)+driftHTML(run)+fieldHTML(run)+historyHTML();
     groups.forEach(function(g){
       var t=typeof g.totalPages==="number"?g.totalPages:(g.pages||[]).length,n=(g.pages||[]).length;
       var flag=g.provisional?'<span class="flag">new section · unreviewed sample</span>'
         :g.notInSitemap?'<span class="flag">not in sitemap anymore</span>':'';
       out+='<section class="group"><div class="group-head"><h2 class="group-name">'+esc(g.name)+flag+'</h2>'+
         (g.pattern?'<span class="group-pattern">'+esc(g.pattern)+'</span>':'')+'</div>'+
-        '<p class="coverage">'+(t>n
+        (t===1&&n===1?'':'<p class="coverage">'+(t>n
           ?'<b>'+t+'</b> pages in this group, <b>'+n+'</b> measured — same template, so the sample stands for the group'
-          :'<b>'+t+'</b> '+(t===1?'page':'pages')+', all measured')+'</p>';
+          :'<b>'+t+'</b> '+(t===1?'page':'pages')+', all measured')+'</p>');
       (g.pages||[]).forEach(function(p){out+=pageHTML(p,prevByName[g.name])});
       out+='</section>';
     });

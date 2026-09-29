@@ -1,23 +1,32 @@
 {
+  "pagesSheet": {
+    "id": "1kRgjIarFY5xpOStzBBvXDMctirE26MOvhFR5NB26v0I",
+    "note": "Page Speed Tracker — one tab per site, columns Website | Page Type | URL. Must be shared as 'Anyone with the link: Viewer'."
+  },
+  "excludePaths": ["/author/*", "/category/*", "/tag/*"],
   "sites": [
     {
       "site": "trafft.com",
       "origin": "https://trafft.com",
+      "sheetTab": "Trafft",
       "dashboard": "https://claude.ai/artifact/Kjs1P2ewU7wjqFudqxtH1J"
     },
     {
       "site": "wpdatatables.com",
       "origin": "https://wpdatatables.com",
+      "sheetTab": "WPDT",
       "dashboard": "https://claude.ai/artifact/GaB4mwrP93nQ7RfaTSK589"
     },
     {
       "site": "ivyforms.com",
       "origin": "https://ivyforms.com",
+      "sheetTab": "IvyForms",
       "dashboard": "https://claude.ai/artifact/1bLACGrNYjYrb3DVX3hp7e"
     },
     {
       "site": "wpamelia.com",
       "origin": "https://wpamelia.com",
+      "sheetTab": "Amelia",
       "dashboard": "https://claude.ai/artifact/CoB39X6Dp923m2Foqks5Pu"
     }
   ]

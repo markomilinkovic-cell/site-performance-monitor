@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Merge audit.js outputs into the one run document the dashboard reads.
-// Usage: node merge.js b1-a.json b1-b.json b2-a.json ... --out run.json
+// Usage: node merge.js b1-a.json b1-b.json b2-a.json ... [--health health.json] --out run.json
 //
 // Inputs are chunks (a few groups per command, to fit the shell's time limit)
 // and bursts (the same groups measured again later, with --burst N). For the
@@ -17,9 +17,11 @@ const path = require("path");
 const { summarise } = require(path.join(__dirname, "stats.js"));
 
 const args = process.argv.slice(2);
-const files = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--out");
+const files = args.filter((a, i) => !a.startsWith("--") && !["--out", "--health"].includes(args[i - 1]));
 const getFlag = (n, d) => { const i = args.indexOf("--" + n); return i === -1 ? d : args[i + 1]; };
 const OUT = getFlag("out", null);
+// health.js output (status check of every crawled URL), attached as run.health.
+const HEALTH = getFlag("health", null);
 // The dashboard database takes documents up to 256 kB.
 const MAX_BYTES = 240000;
 
@@ -131,6 +133,8 @@ const merged = {
   incomplete: stillIncomplete,
   crux: crux ? Object.assign(crux, { field }) : null,
   drift,
+  pagesSource: runs.map(r => r.pagesSource).find(Boolean) || null,
+  health: HEALTH ? JSON.parse(fs.readFileSync(HEALTH, "utf8")) : null,
   configApplied: runs.every(r => r.configApplied)
 };
 

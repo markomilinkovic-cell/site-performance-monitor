@@ -416,6 +416,8 @@ async function measureGroup(g) {
     // Carried from apply-config.js so an unattended run leaves a visible trace
     // when the site's structure no longer matches the saved config.
     drift: src.drift || null,
+    // Where the page list came from (pages.js: the Google Sheet tab and when it was read).
+    pagesSource: src.pagesSource || null,
     configApplied: !!src.configApplied
   };
 

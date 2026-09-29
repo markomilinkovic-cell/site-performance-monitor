@@ -1,7 +1,26 @@
 # Weekly performance routine — setup
 
-This repository runs the `site-perf-report` skill every Monday and appends a new measurement to
-each site's dashboard. Setup takes about ten minutes, then one test run.
+This repository runs the `site-perf-report` skill once a week per site and appends a new
+measurement to that site's dashboard. The pages to measure are read from the **Page Speed
+Tracker** Google Sheet at the start of every run, so changing what is tracked means editing the
+sheet — nothing in this repository or in the routine prompt.
+
+There is **one routine per site** (four routines, Monday to Thursday). With every tracked page
+measured on its own instead of one sample per template, a site is 17–27 pages, and one site
+alone is ~1–2 hours of PSI calls; all four in one session would be 5–8 hours.
+
+## 0. Share the sheet
+
+The routine reads the sheet without signing in to Google, through its CSV endpoint. That only
+works when the sheet is shared as **Anyone with the link → Viewer** (Share → General access).
+The sheet holds only public URLs of public sites, so this exposes nothing that isn't already on
+the sites. If sharing is ever turned off, every run stops with `SHEET UNREADABLE` at the top of
+its summary instead of measuring an outdated list.
+
+Keep the layout: one tab per site, named as in `sites.json` (`sheetTab`), with a header row
+containing `Website`, `Page Type` and `URL`. Adding or removing rows is all that's needed;
+renaming a tab needs the same change in `sites.json`. Author, category and tag archives are never
+measured even if listed (`excludePaths` in `sites.json`).
 
 ## 1. Push this folder to GitHub
 
@@ -18,6 +37,7 @@ At claude.ai/code/routines → New routine → environment selector → create a
 checked (it already covers `*.googleapis.com`, where PSI lives), and these allowed domains:
 
 ```text
+docs.google.com
 trafft.com
 *.trafft.com
 wpdatatables.com
@@ -28,7 +48,8 @@ wpamelia.com
 *.wpamelia.com
 ```
 
-The sessions only fetch sitemaps and preflight each sample URL directly; the page itself is
+`docs.google.com` is for reading the sheet. The sessions also fetch sitemaps, request every
+sitemap URL once for the health check, and preflight each tracked URL directly; the page itself is
 loaded by PageSpeed Insights on Google's machines, with all its third-party scripts, whatever
 this allowlist says. (Under the old local-Lighthouse setup, blocking third parties made scores
 look better than the truth; that no longer applies.) **Full** also works if you'd rather not
@@ -63,54 +84,69 @@ is pre-installed.
 Either way, never commit the key to this repository. In Google Cloud Console, restrict the key
 to the **PageSpeed Insights API** only, so a leaked key can't be used for anything else.
 
-## 3. Create the routine
+## 3. Create the routines
 
-- **Name:** Weekly site performance
+Create four routines with the same settings, differing only in name, day and the site in the
+prompt:
+
+| Routine | Trigger | Site in prompt |
+|---|---|---|
+| Weekly performance — trafft.com | Weekly, Monday 07:00 | `trafft.com` |
+| Weekly performance — wpdatatables.com | Weekly, Tuesday 07:00 | `wpdatatables.com` |
+| Weekly performance — ivyforms.com | Weekly, Wednesday 07:00 | `ivyforms.com` |
+| Weekly performance — wpamelia.com | Weekly, Thursday 07:00 | `wpamelia.com` |
+
+One site a day keeps two sessions from calling PSI at the same time (above ~10 parallel calls PSI
+starts failing) and keeps each session to 1–2 hours.
+
 - **Repository:** the one from step 1
 - **Environment:** the one from step 2
 - **Connectors:** remove all of them. This routine only needs the built-in artifact tool.
-  Anything left in can be used without asking during the run.
-- **Trigger:** Schedule → Weekly → Monday. Pick an early hour (e.g. 06:00) so the dashboards
-  are fresh when the week starts. Runs may start a few minutes late; that's normal stagger.
-- **Prompt:** paste the block below exactly.
+  Anything left in can be used without asking during the run. (The sheet is read over plain
+  HTTPS, not through the Google Drive connector.)
+- **Prompt:** paste the block below, replacing `SITE` with the site from the table.
 
 ```text
-Run the weekly performance update for every site listed in sites.json, using the
-site-perf-report skill in .claude/skills/site-perf-report/.
+Run the weekly performance update for SITE, using the site-perf-report skill in
+.claude/skills/site-perf-report/ and its entry in sites.json.
 
 This is an unattended run. Nobody is available to answer questions, so follow the skill's
 "Unattended runs" section strictly:
 
-- Prepare every site first: read two things from its dashboard's database — the saved grouping
-  config (collection "config", doc "groups") and the latest run (collection "runs", ordered by
-  generatedAt descending, limit 1). If there is no config, skip that site. Then crawl, group, and
-  run apply-config.js with --previous set to that latest run. If apply-config.js reports a site
-  structure change, measure every group it returns, including provisional new sections and
-  sections retried on the previous run's URL.
-- Then measure in five rounds. Round k runs burst k for every site in turn, with audit.js
-  --runs 5 --burst k (mobile and desktop together, the default), --deadline 540, a 600000 ms
-  shell timeout per command, and chunks from split.js --size 5. After burst 1 of a site, run
-  resolve.js on its burst-1 outputs and use that fixed groups file for bursts 2-5, so every burst
-  measures the same URLs.
-- After rounds 1, 3 and 5, merge each site's burst files so far with merge.js and write the result
-  to the dashboard listed in sites.json with write_db, collection "runs", doc_id set to the merged
-  run's generatedAt to the second, colons replaced by dashes (for example 2026-09-28T06-00-12Z).
-  generatedAt stays the same across the three merges, so each write replaces the previous one.
+- Run every command from the repository root. Prepare first:
+  1. node .claude/skills/site-perf-report/scripts/pages.js --site SITE --sites sites.json --out /tmp/pages.json
+     This reads the pages to measure from the Page Speed Tracker sheet. It is the only page list;
+     don't add, drop or substitute pages. If it exits 4 (sheet unreadable) or 5 (no pages), do
+     not measure; still do steps 2-3, write nothing to the dashboard, and put the error at the top
+     of the summary.
+  2. node .claude/skills/site-perf-report/scripts/crawl.js <origin from sites.json> --out /tmp/urls.json
+  3. node .claude/skills/site-perf-report/scripts/health.js /tmp/urls.json --pages /tmp/pages.json --deadline 540
+     --out /tmp/health.json (600000 ms shell timeout). The crawl is used only for this check.
+  4. node .claude/skills/site-perf-report/scripts/split.js /tmp/pages.json --size 5 --prefix /tmp/g-
+- Then measure in five rounds. Round k runs audit.js --runs 5 --burst k --deadline 540 on every
+  chunk in turn (mobile and desktop together, the default), with a 600000 ms shell timeout per
+  command. Every round uses the same chunk files.
+- After rounds 1, 3 and 5, merge every burst file so far with
+  merge.js ... --health /tmp/health.json, and write the result to the dashboard listed in
+  sites.json with write_db, collection "runs", doc_id set to the merged run's generatedAt to the
+  second, colons replaced by dashes (for example 2026-09-28T06-00-12Z). generatedAt stays the same
+  across the three merges, so each write replaces the previous one.
 - If audit.js exits with code 3 (PSI key rejected or quota exhausted), stop measuring, write what
   has been measured so far, and put that at the top of the summary.
-- A group skipped for "time budget" or incomplete in one burst just has fewer runs. Only if a
-  group ends with fewer than 15 runs on a form factor, measure it once more with --burst 6 and
-  merge again. A wide spread alone is normal for PSI and is not a reason to rerun.
-- Do not publish or republish any artifact. Do not change any config. Do not modify, commit
-  or push anything in the repository.
+- A page skipped for "time budget" or incomplete in one burst just has fewer runs. Only if a page
+  ends with fewer than 15 runs on a form factor, measure it once more with --burst 6 and merge
+  again. A wide spread alone is normal for PSI and is not a reason to rerun.
+- Do not publish or republish any artifact. Do not modify the sheet, sites.json, or anything else
+  in the repository; do not commit or push.
 
-Finish with a summary: for each site, whether the run was written and with how many bursts, the
-median and typical range for mobile and desktop per group, any skipped groups with the reason,
-and any site structure drift reported by apply-config.js: which sections are new (measured with
-an unreviewed sample) and which vanished (and whether their previous page still worked).
-If crawl.js or apply-config.js reports that a sitemap file failed to load (SITEMAP FETCH FAILED),
-put that at the top of that site's summary with the sitemap URL and its HTTP status: every page
-listed only in that sitemap is missing from the report.
+Finish with a summary, in this order:
+1. Health check: every URL that answered 5xx twice (say which are tracked pages), any sitemap file
+   that failed to load (SITEMAP FETCH FAILED, with its URL and status — the pages listed only there
+   were not checked), and the count of 404s.
+2. Sheet: rows pages.js skipped and why (wrong host, duplicate, excluded archive, bad URL).
+3. Measurement: whether the run was written and with how many bursts, the median and typical
+   range for mobile and desktop per page, and any skipped pages with the reason (a 404 or
+   redirect means the sheet row points at an old URL).
 ```
 
 ## 4. Before relying on it: what hasn't been verified
@@ -126,11 +162,14 @@ be confirmed by a real run:
 2. **Whether the PSI key reaches PSI.** With the API credential option, the first call answering
    "daily quota exhausted" means the proxy didn't attach the key (a keyless call lands on
    Google's shared quota, which is always used up) — check the credential's host and header.
-3. **How long one session may run.** A full pass is 5 bursts × 5 runs × 2 form factors over 29
-   groups: ~1,450 PSI calls, about 5% of one day's free quota. At the measured 10–20 calls a
-   minute that is roughly 75–120 minutes, plus ~10 minutes of crawling and preparation. The
-   provisional writes after rounds 1 and 3 mean a session cut short still updates every
-   dashboard with the bursts it finished.
+3. **How long one session may run.** One site is 5 bursts × 5 runs × 2 form factors over its
+   17–27 pages: 850–1,350 PSI calls (about 5% of one day's free quota). At the measured 10–20
+   calls a minute that is roughly 45–135 minutes, plus a few minutes for the sheet, the crawl and
+   the health check. The provisional writes after rounds 1 and 3 mean a session cut short still
+   updates the dashboard with the bursts it finished.
+5. **Whether the sheet is reachable from the environment.** The first command of the run,
+   `pages.js`, answers `SHEET UNREADABLE` if `docs.google.com` isn't allowed or the sheet isn't
+   shared by link.
 4. **The shell's command time limit.** The prompt asks for a 600000 ms (10 minute) timeout per
    command and `--deadline 540`. If the transcript shows commands killed before that, lower
    `--size` and `--deadline` in the prompt.
@@ -142,15 +181,26 @@ status only means the session didn't crash — not that the work succeeded.
 
 Check that:
 
+- `pages.js` printed `N pages for SITE from sheet …` with the number of rows in that tab
+- `health.js` printed its summary line (and nothing was cut off by the deadline)
 - `audit.js` measured without `STOPPED EARLY` (the key worked)
-- each site read its config and applied it (look for `apply-config: N groups`)
-- each site ended with a successful database write, not a question
-- all four dashboards show a new run
+- the run ended with a successful database write, not a question
+- the dashboard shows a new run with the sheet's pages and a "Health check" line at the top
+
+Run one routine first (ivyforms.com is the quickest to check), then enable the other three.
 
 If the run stalls on an approval for the database write, stop there: the routine can't do this
 job unattended, and the fallback is to keep running updates from chat.
 
-## 6. Expect one step change in the history
+## 6. Expect a step change in the history
+
+**The first sheet-based run is a new baseline.** Earlier runs measured one sample per template
+group ("Blog", "Documentation" …); now every sheet row is its own entry ("Blog Post ·
+nps-survey-questions"). Entries are matched across runs by name, so old groups simply stop and
+new pages start without a delta, and the overall score in the history row is taken over a
+different set of pages. Compare forward from the first sheet-based run.
+
+The same holds for the switch to PSI:
 
 Earlier runs were local Lighthouse on whatever machine ran the skill; runs are now measured by
 PageSpeed Insights on Google's hardware and carry `source: "psi"`. Scores depend on the measuring
